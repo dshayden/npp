@@ -1,41 +1,13 @@
 import numpy as np
 import scipy.linalg as sla
 import itertools
-import networkx as nx, functools, du
-
-# def shortest_rigid_path(y, m, dist):
-#   T, N, D = y.shape
-#   rd = np.stack([ rigid_from_obs(yy) for yy in y ])
-#   
-#   def _MakeTrellisEdge(t, i, k, x, nU, dist2):
-#     node1 = t*nU + i
-#     node2 = (t+1)*nU + k
-#     weight = dist2( x[t, i], x[t+1, k] )
-#     return (node1, node2, {'weight': weight})
-#   nU = 2**(D-2)
-#
-#   MakeEdge = functools.partial(_MakeTrellisEdge, x=rd, nU=nU, dist2=dist)
-#       
-#   edges = du.For(MakeEdge, list(np.ndindex(T-1, nU, nU)), showProgress=False)
-#   sourceEdges = [ ('source', k, {'weight': 0}) for k in range(nU) ]
-#   sinkEdges = [ ('sink', T*nU - 1 - k, {'weight': 0}) for k in range(nU) ]
-#
-#   G = nx.Graph()
-#   G.add_edges_from(sourceEdges + edges + sinkEdges)
-#   path = nx.shortest_path(G, source='source', target='sink', weight='weight')
-#   path = np.array(path[1:-1]) # remove source and sink nodes
-#
-#   x = rd[ (path - (path%nU)) // nU, path % nU ]
-#
-#   return x
+import functools, du
 
 def rigid_from_obs(y):
   # y is assumed to have trailing 1
   mu = np.mean(y[:,:-1], axis=0)
   sigma = np.cov(y[:,:-1].T)
   _, sigs = eigh_proper_all(sigma)
-  # R = np.stack([ sig.T for sig in sigs ])
-  # D = np.stack([ -r.dot(mu) for r in R])
 
   R = np.stack(sigs)
   D = np.stack([ mu for r in R])

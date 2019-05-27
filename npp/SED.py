@@ -17,6 +17,8 @@ def opts(**kwargs):
     H_* (tuple): Prior on * (* = Q, x, S, theta, E)
     lie (string): 'se2' or 'se3' (default: 'se2')
     alpha (float): Concentration parameter (default: 0.01)
+    Q_Diag (bool): Enforce diagonal Global Dynamic Noise Cov
+    S_Diag (bool): Enforce diagonal Local Dynamic Noise Cov
 
   OUTPUT
     o (argparse.Namespace): Algorithm options
@@ -39,7 +41,10 @@ def opts(**kwargs):
     o.dy = 3
   else:
     assert False, 'Only support se2 or se3'
-  o.dxGm = [o.dy+1, o.dy+1]
+  o.dxGm = (o.dy+1, o.dy+1)
+
+  o.Q_Diag = kwargs.get('Q_Diag', True)
+  o.S_Diag = kwargs.get('S_Diag', True)
 
   return o
 
@@ -127,7 +132,7 @@ def initXDataMeans(o, y):
   for t in range(T): x[t,:-1,-1] = y_mu[t]
   return x
 
-def initPartsAndAssoc(o, y, x, alpha, **kwargs):
+def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   """ Initialize parts (theta, E, S) and associations z using static DP.
   
   INPUT
@@ -135,6 +140,7 @@ def initPartsAndAssoc(o, y, x, alpha, **kwargs):
     y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
     x (ndarray, [T,] + o.dxGm): Global latent dynamic
     alpha (float): Concentration parameter
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
 
   KEYWORD INPUTS
     maxBreaks (int): Max parts under initialization (default: 20)
@@ -183,17 +189,64 @@ def initPartsAndAssoc(o, y, x, alpha, **kwargs):
   # relabel z0 from 0..len(used)-1
   zNew = -1*np.ones_like(z0)
   for cnt, u in enumerate(used): zNew[z0==u] = cnt
-  nUsed = len(pi)-1
+  K = len(pi)-1
   z0 = zNew
 
   # get theta0, E0 from Sigma
-  theta0 = np.zeros((nUsed, o.dy+1, o.dy+1))
-  E0 = np.zeros((nUsed, o.dy, o.dy))
-  for i in range(nUsed):
+  theta0 = np.zeros((K, o.dy+1, o.dy+1))
+  E0 = np.zeros((K, o.dy, o.dy))
+  for i in range(K):
     _sigD, _R = util.eigh_proper_all(Sigma[i])
     theta0[i] = util.make_rigid_transform(_R[0], mu[i])
     E0[i] = np.diag(_sigD)
 
+  S0 = [ iw.rvs(*o.H_S[1:]) for k in range(K) ]
+
+  theta = np.zeros((T, K) + o.dxGm)
+  theta[tInit] = theta0
+
+  z = [ [] for t in range(T) ]
+  z[tInit] = z0
+  
+  for t in reversed(range(tInit)):
+    # propagate theta_{t+1} -> theta_t
+    thetaPredict_t = theta[t+1]
+
+    # associate
+    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E0, x[t], mL[t])
+
+    # sample part rotation, translation
+    for k in range(K):
+      y_tk = y[t][zPredict==k]
+      thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+        thetaPredict_t[k], x[t], S0[k], E0[k], theta[t+1,k])
+      thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+        thetaPredict_t[k], x[t], S0[k], E0[k], theta[t+1,k])
+    theta[t] = thetaPredict_t
+
+    # re-associate
+    z[t] = inferZ(o, y[t], pi, theta[t], E0, x[t], mL[t])
+
+  for t in range(tInit+1, T):
+    # propagate theta_{t-1} -> theta_t
+    thetaPredict_t = theta[t-1]
+    
+    # associate
+    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E0, x[t], mL[t])
+
+    # sample part rotation, translation
+    for k in range(K):
+      y_tk = y[t][zPredict==k]
+      thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+        thetaPredict_t[k], x[t], S0[k], E0[k], theta[t-1,k])
+      thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+        thetaPredict_t[k], x[t], S0[k], E0[k], theta[t-1,k])
+    theta[t] = thetaPredict_t
+
+    # re-associate
+    z[t] = inferZ(o, y[t], pi, theta[t], E0, x[t], mL[t])
+
+  
   # todo: build out theta trajectory from tInit
   #   for t in reversed(range(tInit)):
   #     initialize prediction
@@ -205,9 +258,54 @@ def initPartsAndAssoc(o, y, x, alpha, **kwargs):
   #     associate
   #     forward filter
   #     associate
-  return z0, pi, theta0, E0
 
-def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
+  # re-estimate S, E
+
+    # theta (ndarray, [T, K, dt]): K-Part Local dynamic.
+    # E (ndarray, [K, dt, dt]): K-Part Local Extent
+    # S (ndarray, [K, dt, dt]): K-Part Local Dynamic
+    # z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    # pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+    #
+  return theta, E0, S0, z, pi
+
+def logpdf_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
+  """ Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y_t (ndarray, [N_t, dy]): Observations at time t
+    z_t (ndarray, [N_t,]): Associations at time t
+    x_t (ndarray, dxGm): Current global latent dynamic, time t
+    theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
+    E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
+    mL_t (ndarray, [N_t,]): marginal LL
+
+  OUTPUT
+    ll (float): log-likelihood for time t
+  """
+  m = getattr(lie, o.lie)
+  K = theta_t.shape[0]
+  zeroObs = np.zeros(o.dy)
+
+  # current y_t observations
+  ll = 0.0
+  for k in range(K):
+    z_tk = z_t == k
+    Nk = np.sum(z_tk)
+    if Nk == 0: continue
+    y_tk_world = y_t[z_tk]
+    T_part_world = m.inv( x_t.dot(theta_t[k]) )
+    y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
+    ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E[k], allow_singular=True))
+
+  if mL_t is not None:
+    z_t0 = z_t == -1
+    ll += np.sum(mL_t[z_t0])
+
+  return ll
+
+def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
   """ Sample translation component d_x_t of x_t
 
   INPUT
@@ -217,15 +315,17 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
     x_t (ndarray, dxGm): Current global latent dynamic, time t
     theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
     E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
-    Q (ndarray, [dxA, dxA]): Global Dynamic Noise Cov
+    Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
     x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
 
   KEYWORD INPUTS
     x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
+    Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
 
   OUTPUT
     d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
   """
+  assert o.Q_Diag, 'Method is only valid for Q_Diag = True'
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
 
@@ -234,8 +334,12 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
   if x_tplus1 is None: noFuture = True
   else: noFuture = False
 
+  # Check if we have different Q_tminus1, Q_tplus1
+  Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
+
   # Only care about translation component of noise
-  Q_d = Q[:o.dy, :o.dy]
+  Q_dminus1 = Q_tminus1[:o.dy, :o.dy]
+  Q_dplus1 = Q_tplus1[:o.dy, :o.dy]
 
   # Separate R, d
   R_x_t, _ = m.Rt(x_t)
@@ -248,14 +352,14 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
 
   ## incorporate N( d_{x_t} | ... )
   mu = d_x_tminus1
-  Sigma = RV.dot(Q_d).dot(RV.T)
+  Sigma = RV.dot(Q_dminus1).dot(RV.T)
 
   if not noFuture:
     R_x_tplus1, d_x_tplus1 = m.Rt(x_tplus1)
     V_x_t_x_tplus1_inv = m.getVi( m.inv(x_t).dot(x_tplus1) )
     V_x_t_x_tplus1 = np.linalg.inv(V_x_t_x_tplus1_inv)
     RV = R_x_t.dot(V_x_t_x_tplus1)
-    obsCov = RV.dot(Q_d).dot(RV.T)
+    obsCov = RV.dot(Q_dplus1).dot(RV.T)
     mu, Sigma = inferNormalNormal(d_x_tplus1, obsCov, mu, Sigma)
 
   ## incorporate \prod_n N( y_{tn} | ... )
@@ -301,6 +405,7 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
   OUTPUT
     d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
   """
+  assert o.S_Diag, 'Method is only valid for S_Diag = True'
   m = getattr(lie, o.lie)
 
   # Are we sampling from forward filter (past only) or full conditional?
@@ -348,8 +453,9 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
 
   # sample d_theta_tk
   return mvn.rvs(mu, Sigma)
+  # return mu
 
-def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
+def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
   """ Sample translation component d_x_t of x_t
 
   INPUT
@@ -359,11 +465,12 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
     x_t (ndarray, dxGm): Current global latent dynamic, time t
     theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
     E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
-    Q (ndarray, [dxA, dxA]): Global Dynamic Noise Cov
+    Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
     x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
 
   KEYWORD INPUTS
     x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
+    Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
     nRotationSamples (int): length of markov chain for rotation slice sampler
     w (float): characteristic width of slice sampler, def: np.pi / 100
     P (float): max doubling iterations of slice sampler def: 10
@@ -381,8 +488,13 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
 
   # Get future values, if needed.
   x_tplus1 = kwargs.get('x_tplus1', None)
-  if x_tplus1 is None: noFuture = True
-  else: noFuture = False
+  if x_tplus1 is None:
+    noFuture = True
+  else:
+    # Check if we have different Q_tminus1, Q_tplus1
+    Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
+    noFuture = False
+
 
   # Sample R_x_t | MB(R_x_t) using slice sampler
   if o.lie == 'se2': rotIdx = np.arange(2,3)
@@ -414,7 +526,7 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
       ll += mvn.logpdf(
         m.algi(m.logm(m.inv(x_tminus1).dot(x_t_proposal))),
         zeroAlgebra,
-        Q,
+        Q_tminus1,
         allow_singular=True
       )
 
@@ -423,20 +535,11 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q, x_tminus1, **kwargs):
         ll += mvn.logpdf(
           m.algi(m.logm(m.inv(x_t_proposal).dot(x_tplus1))),
           zeroAlgebra,
-          Q,
+          Q_tplus1,
           allow_singular=True
         )
 
-      # current y_t observations
-      for k in range(K):
-        z_tk = z_t == k
-        Nk = np.sum(z_tk)
-        if Nk == 0: continue
-
-        y_tk_world = y_t[z_tk]
-        T_part_world = m.inv( x_t_proposal.dot(theta_t[k]) )
-        y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
-        ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E[k], allow_singular=True))
+      ll += logpdf_t(o, y_t, z_t, x_t_proposal, theta_t, E)
       return ll
 
     # end full conditional functional
@@ -500,6 +603,7 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
   P = kwargs.get('P', 10) # max doubling iterations
 
   theta_tk = theta_tk.copy() # don't modify passed parameter
+  z_tkFake = np.zeros(y_tk.shape[0], dtype=np.int) # fake z_t for logpdf_t
   for idx in rotIdx:
     p0 = m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk)))
 
@@ -529,13 +633,15 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
           S_tplus1_k,
           allow_singular=True
         )
+     
+      ll += logpdf_t(o, y_tk, z_tkFake, x_t, theta_tk_proposal[np.newaxis],
+        E_k[np.newaxis])
+      # if y_tk.shape[0] > 0:
+      #   y_tk_world = y_tk
+      #   T_part_world = m.inv(x_t.dot(theta_tk_proposal))
+      #   y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
+      #   ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E_k, allow_singular=True))
 
-      if y_tk.shape[0] > 0:
-        y_tk_world = y_tk
-        T_part_world = m.inv(x_t.dot(theta_tk_proposal))
-        y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
-
-        ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E_k, allow_singular=True))
       return ll
     # end full conditional functional
 
@@ -563,7 +669,7 @@ def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
     theta_t (ndarray, [K, [o.dxGm]]): K-Part local dynamics
     E (ndarray, [K, o.dy, o.dy]): K-Part observation covariance
     x_t (ndarray, o.dxGm): Global latent dynamic.
-    mL_t (ndarray, [N_1,]): marginal LL
+    mL_t (ndarray, [N_t,]): marginal LL
 
   KEYWORD INPUT
     max (bool): Max assignment rather than sampled assignment
