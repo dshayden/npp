@@ -306,7 +306,7 @@ def logpdf_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
   return ll
 
 def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
-  """ Sample translation component d_x_t of x_t
+  """ Sample translation component d_x_t of x_t, allowing for correlation.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -321,11 +321,12 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
   KEYWORD INPUTS
     x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
     Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
+    returnMuSigma (bool): Return mu, Sigma rather than sample
 
   OUTPUT
     d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
   """
-  assert o.Q_Diag, 'Method is only valid for Q_Diag = True'
+  # assert o.Q_Diag, 'Method is only valid for Q_Diag = True'
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
 
@@ -337,60 +338,74 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
   # Check if we have different Q_tminus1, Q_tplus1
   Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
 
-  # Only care about translation component of noise
-  Q_dminus1 = Q_tminus1[:o.dy, :o.dy]
-  Q_dplus1 = Q_tplus1[:o.dy, :o.dy]
-
-  # Separate R, d
+  # Separate R, d; get H, x2, b
   R_x_t, _ = m.Rt(x_t)
   R_x_tminus1, d_x_tminus1 = m.Rt(x_tminus1)
 
-  # Sample d_x_t | R_x_t, MB(x_t) from linear Gaussian system
-  V_x_tminus1_x_t_inv = m.getVi( m.inv(x_tminus1).dot(x_t) )
-  V_x_tminus1_x_t = np.linalg.inv(V_x_tminus1_x_t_inv)
-  RV = R_x_tminus1.dot(V_x_tminus1_x_t)
-
-  ## incorporate N( d_{x_t} | ... )
-  mu = d_x_tminus1
-  Sigma = RV.dot(Q_dminus1).dot(RV.T)
+  V_x_tminus1_x_t_inv, x2 = m.getVi(m.inv(x_tminus1).dot(x_t), return_phi=True)
+  if o.lie == 'se2': x2 = np.array([x2])
+  H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
+  b = -H.dot(d_x_tminus1)
+  u = np.zeros(o.dxA)
 
   if not noFuture:
     R_x_tplus1, d_x_tplus1 = m.Rt(x_tplus1)
-    V_x_t_x_tplus1_inv = m.getVi( m.inv(x_t).dot(x_tplus1) )
-    V_x_t_x_tplus1 = np.linalg.inv(V_x_t_x_tplus1_inv)
-    RV = R_x_t.dot(V_x_t_x_tplus1)
-    obsCov = RV.dot(Q_dplus1).dot(RV.T)
-    mu, Sigma = inferNormalNormal(d_x_tplus1, obsCov, mu, Sigma)
+    V_x_t_x_tplus1_inv, x2_ = m.getVi(m.inv(x_t).dot(x_tplus1), return_phi=True)
+    if o.lie == 'se2': x2_ = np.array([x2_])
 
-  ## incorporate \prod_n N( y_{tn} | ... )
-  ### pre-compute observation bias and covariance for each of K parts
-  obsCov = np.zeros((K, o.dy, o.dy))
-  bias = np.zeros((K, o.dy))
+    H_ = -V_x_t_x_tplus1_inv.dot(R_x_t.T)
+    b_ = -H_.dot(d_x_tplus1)
+    u_ = np.zeros(o.dxA)
+
+    mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, Q_tminus1,
+      x2_, H_, b_, u_, Q_tplus1)
+  else:
+    mu, Sigma = inferNormalConditional(x2, H, b, u, Q_tminus1)
+
+  Sigma_inv = np.linalg.inv(Sigma)
   for k in range(K):
     # if not isObserved[k]: continue
     R_theta_tk, d_theta_tk = m.Rt(theta_t[k])
     R2 = R_x_t.dot(R_theta_tk)
-    obsCov[k] = R2.dot(E[k]).dot(R2.T)
-    bias[k] = R_x_t.dot(d_theta_tk)
+    obsCov = R2.dot(E[k]).dot(R2.T)
+    obsCov_inv = R2.dot(np.linalg.inv(E[k])).dot(R2.T)
+    bias = R_x_t.dot(d_theta_tk)
 
-  ### update with each observation
-  for n in range(y_t.shape[0]):
-    k = z_t[n]
-    if k >= 0:
-      mu, Sigma = inferNormalNormal(y_t[n], obsCov[k], mu, Sigma, b=bias[k])
+    z_tk = z_t == k
+    Nk = np.sum(z_tk)
+    if Nk == 0: continue
+    SigmaNew_inv = Sigma_inv + Nk*obsCov_inv
+    SigmaNew = np.linalg.inv(SigmaNew_inv)
+    muNew = SigmaNew.dot( Sigma_inv.dot(mu) + obsCov_inv.dot(
+      np.sum(y_t[z_tk], axis=0) - Nk*bias)
+    )
+    mu, Sigma, Sigma_inv = (muNew, SigmaNew, SigmaNew_inv)
 
-  ## sample d_x_t
-  d_x_t = mvn.rvs(mu, Sigma)
+  # ## incorporate \prod_n N( y_{tn} | ... )
+  # ### pre-compute observation bias and covariance for each of K parts
+  # obsCov = np.zeros((K, o.dy, o.dy))
+  # bias = np.zeros((K, o.dy))
+  # for k in range(K):
+  #   # if not isObserved[k]: continue
+  #   R_theta_tk, d_theta_tk = m.Rt(theta_t[k])
+  #   R2 = R_x_t.dot(R_theta_tk)
+  #   obsCov[k] = R2.dot(E[k]).dot(R2.T)
+  #   bias[k] = R_x_t.dot(d_theta_tk)
+  #
+  # ### update with each observation
+  # for n in range(y_t.shape[0]):
+  #   k = z_t[n]
+  #   if k >= 0:
+  #     mu, Sigma = inferNormalNormal(y_t[n], obsCov[k], mu, Sigma, b=bias[k])
 
-  # return mu, Sigma
-  return d_x_t
+  if kwargs.get('returnMuSigma', False): return mu, Sigma
+  else: return mvn.rvs(mu, Sigma)
 
-## Only valid for 0 correlation between rotation, translation
 def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
   """ Sample translation component d_theta_tk of theta_tk
 
   INPUT
-    o (argparse.Namespace): Algorithm options
+     (argparse.Namespace): Algorithm options
     y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
     theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
     x_t (ndarray, dxGm): Current global latent dynamic, time t
@@ -401,11 +416,11 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
   KEYWORD INPUTS
     theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
     S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
+    returnMuSigma (bool): Return mu, Sigma rather than sample
 
   OUTPUT
     d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
   """
-  assert o.S_Diag, 'Method is only valid for S_Diag = True'
   m = getattr(lie, o.lie)
 
   # Are we sampling from forward filter (past only) or full conditional?
@@ -413,47 +428,70 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
   if theta_tplus1_k is None: noFuture = True
   else: noFuture = False
 
-  # Only different if we use noise approximations
+  # Check if we have different S_tminus1_k, S_tplus1_k
   S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
-
-  # Only care about translation component of noise
-  S_tminus1_kd = S_tminus1_k[:o.dy, :o.dy]
-  S_tplus1_kd = S_tplus1_k[:o.dy, :o.dy]
 
   # Separate R, d
   R_x_t, d_x_t = m.Rt(x_t)
-  R_theta_tk, d_theta_tk = m.Rt(theta_tk)
+  R_theta_tk, _ = m.Rt(theta_tk)
   R_theta_tminus1_k, d_theta_tminus1_k = m.Rt(theta_tminus1_k)
 
-  # Sample d_theta_tk | R_theta_tk, ... from linear Gaussian system
-  V_theta_tminus1_k_theta_tk_inv = m.getVi(m.inv(theta_tminus1_k).dot(theta_tk))
-  RV = du.mrdivide(R_theta_tminus1_k, V_theta_tminus1_k_theta_tk_inv)
-
-  ## Incorporate N( d_{theta_tk} | ... )
-  mu = d_theta_tminus1_k
-  Sigma = RV.dot(S_tminus1_kd).dot(RV.T)
+  # Get substitutions for prior
+  V_theta_tminus1_k_theta_tk_inv, x2 = m.getVi(
+    m.inv(theta_tminus1_k).dot(theta_tk), return_phi=True)
+  if o.lie == 'se2': x2 = np.array([x2])
+  H = V_theta_tminus1_k_theta_tk_inv.dot(R_theta_tminus1_k.T)
+  b = -H.dot(d_theta_tminus1_k)
+  u = np.zeros(o.dxA)
 
   if not noFuture:
+    # setup
     R_theta_tplus1_k, d_theta_tplus1_k = m.Rt(theta_tplus1_k)
-    V_theta_tk_tplus1_k_inv = m.getVi( m.inv(theta_tk).dot(theta_tplus1_k) )
-    RV = du.mrdivide(R_theta_tk, V_theta_tk_tplus1_k_inv)
-    obsCov = RV.dot(S_tplus1_kd).dot(RV.T)
-    mu, Sigma = inferNormalNormal(d_theta_tplus1_k, obsCov, mu, Sigma)
+    V_theta_tk_theta_tplus1_k_inv, x2_ = m.getVi(
+      m.inv(theta_tk).dot(theta_tplus1_k), return_phi=True)
+    if o.lie == 'se2': x2_ = np.array([x2_])
+    H_ = -V_theta_tk_theta_tplus1_k_inv.dot(R_theta_tk.T)
+    b_ = -H_.dot(d_theta_tplus1_k)
+    u_ = np.zeros(o.dxA)
+    mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, S_tminus1_k,
+      x2_, H_, b_, u_, S_tplus1_k)
+  else:
+    mu, Sigma = inferNormalConditional(x2, H, b, u, S_tminus1_k)
 
-  ## incorporate \prod_n N( y_{tn} | z_{tn}==k, ... )
-  H = R_x_t
-  bias = d_x_t
-  R2 = R_x_t.dot(R_theta_tk)
-  obsCov = R2.dot(E_k).dot(R2.T)
+  Nk = y_tk.shape[0]
+  if Nk > 0:
+    R2 = R_x_t.dot(R_theta_tk)
+    H = R_x_t
+    bias = d_x_t
+    obsCov = R2.dot(E_k).dot(R2.T)
+    obsCov_inv = R2.dot(np.linalg.inv(E_k)).dot(R2.T)
+    
+    Sigma_inv = np.linalg.inv(Sigma)
+    SigmaNew_inv = Sigma_inv + Nk*H.T.dot(obsCov_inv).dot(H)
+    SigmaNew = np.linalg.inv(SigmaNew_inv)
+    muNew = SigmaNew.dot( Sigma_inv.dot(mu) + H.T.dot(obsCov_inv).dot(
+      np.sum(y_tk, axis=0) - Nk*bias)
+    )
+    mu, Sigma = (muNew, SigmaNew)
 
-  ## update with each observation
-  # TODO: can we do this without a loop?
-  for n in range(y_tk.shape[0]):
-    mu, Sigma = inferNormalNormal(y_tk[n], obsCov, mu, Sigma, b=bias, H=H)
+    # ## incorporate \prod_n N( y_{tn} | z_{tn}==k, ... )
+    # H = R_x_t
+    # bias = d_x_t
+    # R2 = R_x_t.dot(R_theta_tk)
+    # obsCov = R2.dot(E_k).dot(R2.T)
+    #
+    # ## update with each observation
+    # # TODO: can we do this without a loop?
+    # for n in range(y_tk.shape[0]):
+    #   mu, Sigma = inferNormalNormal(y_tk[n], obsCov, mu, Sigma, b=bias, H=H)
 
   # sample d_theta_tk
-  return mvn.rvs(mu, Sigma)
+  # return mu, Sigma
   # return mu
+  # return mvn.rvs(mu, Sigma)
+
+  if kwargs.get('returnMuSigma', False): return mu, Sigma
+  else: return mvn.rvs(mu, Sigma)
 
 def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
   """ Sample translation component d_x_t of x_t
@@ -777,5 +815,108 @@ def inferNormalNormal(y, SigmaY, muX, SigmaX, H=None, b=None):
   SigmaI = SigmaXi + H.T.dot(SigmaYi).dot(H)
   Sigma = np.linalg.inv(SigmaI)
   mu = Sigma.dot(H.T.dot(SigmaYi).dot(y-b) + SigmaXi.dot(muX))
+
+  return mu, Sigma
+
+def inferNormalConditionalNormal(x2, H, b, u, S, x2_, H_, b_, u_, S_):
+  """ Return mu, Sigma in x1 | x2, H, b, u, S, x2_, H_, b_, u_, S_, where
+    
+       x1 ~ N(x1 | mu, Sigma)
+     propto N( [ H x1 + b; x2 ] | u, S ) * N( [ H_ x1 + b_; x2_ ] | u_, S_ )
+
+  INPUT
+    x2 (ndarray, [d2,])
+    H (ndarray, [d1, d1])
+    b (ndarray, [d1,])
+    u (ndarray, [d1+d2,])
+    S (ndarray, [d1+d2,d1+d2])
+    x2_ (ndarray, [d2,])
+    H_ (ndarray, [d1, d1])
+    b_ (ndarray, [d1,])
+    u_ (ndarray, [d1+d2,])
+    S_ (ndarray, [d1+d2,d1+d2])
+
+  OUTPUT
+    mu (ndarray, [d1,])
+    Sigma (ndarray, [d1,d1])
+  """
+  d1, d2 = (len(b), len(x2))
+
+  # Get block matrices
+  S11 = S[:d1,:d1]  # d1 x d1
+  S12 = S[:d1,d1:]  # d1 x d2
+  S21 = S12.T       # d2 x d1
+  S22 = S[d1:,d1:]  # d2 x d2
+  u1 = u[:d1]       # d1
+  u2 = u[d1:]       # d2
+
+  S11_ = S_[:d1,:d1]  # d1 x d1
+  S12_ = S_[:d1,d1:]  # d1 x d2
+  S21_ = S12_.T       # d2 x d1
+  S22_ = S_[d1:,d1:]  # d2 x d2
+  u1_ = u_[:d1]       # d1
+  u2_ = u_[d1:]       # d2
+
+  # Get necessary inverses
+  S22inv = np.linalg.inv(S22)
+  SoverS22inv = np.linalg.inv( S11 - S12.dot(S22inv).dot(S21) )
+
+  S22_inv = np.linalg.inv(S22_)
+  S_overS22_inv = np.linalg.inv( S11_ - S12_.dot(S22_inv).dot(S21_) )
+
+  # Simplifying substitutions
+  lam = u1 + S12.dot(S22inv).dot(x2 - u2) - b
+  lam_ = u1_ + S12_.dot(S22_inv).dot(x2_ - u2_) - b_
+
+  # Final calculations
+  SigmaI = H.T.dot(SoverS22inv).dot(H) + \
+           H_.T.dot(S_overS22_inv).dot(H_)
+  Sigma = np.linalg.inv(SigmaI)
+  mu = Sigma.dot( H.T.dot(SoverS22inv).dot(lam) +
+                  H_.T.dot(S_overS22_inv).dot(lam_))
+  return mu, Sigma
+
+def inferNormalConditional(x2, H, b, u, S):
+  """ Return mu, Sigma in x1 | x2, H, b, u, S, where
+    
+       x1 ~ N(x1 | mu, Sigma)
+     propto N( [ H x1 + b; x2 ] | u, S )
+
+  INPUT
+    x2 (ndarray, [d2,])
+    H (ndarray, [d1, d1])
+    b (ndarray, [d1,])
+    u (ndarray, [d1+d2,])
+    S (ndarray, [d1+d2,d1+d2])
+
+  OUTPUT
+    mu (ndarray, [d1,])
+    Sigma (ndarray, [d1,d1])
+  """
+  d1, d2 = (len(b), len(x2))
+
+  # Get block matrices
+  S11 = S[:d1,:d1]  # d1 x d1
+  S12 = S[:d1,d1:]  # d1 x d2
+  S21 = S12.T       # d2 x d1
+  S22 = S[d1:,d1:]  # d2 x d2
+  u1 = u[:d1]       # d1
+  u2 = u[d1:]       # d2
+
+  # Get necessary inverses
+  S22inv = np.linalg.inv(S22)
+
+  SoverS22 = S11 - S12.dot(S22inv).dot(S21)
+
+  # Simplifying substitutions
+  lam = u1 + S12.dot(S22inv).dot(x2 - u2) - b
+
+  # Finally
+  Sigma = SoverS22
+  mu = lam
+  
+  H_i = np.linalg.inv(H)
+  mu = H_i.dot(mu)
+  Sigma = H_i.dot(Sigma).dot(H_i.T)
 
   return mu, Sigma
