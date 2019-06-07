@@ -11,7 +11,7 @@ import IPython as ip
 import os
 
 
-path = 'data/synthetic/se2_randomwalk3'
+path = 'data/synthetic/se2_randomwalk10'
 # os.makedirs(path)
 try: os.makedirs(path)
 except: None
@@ -41,13 +41,15 @@ df = 1000
 H_Q = ('iw', df, df*np.diag((
   transX_object_1sd**2, transY_object_1sd**2, rotAngle_object_1sd**2
 )))
-H_x = ('mvnL', np.zeros(dxA), .01*np.eye(dxA))
+# H_x = ('mvnL', np.zeros(dxA), .01*np.eye(dxA))
+H_x = ('mvnL', np.eye(dxA), .01*np.eye(dxA))
 H_S = ('iw', df, df*np.diag((
   transX_parts_1sd**2, transY_parts_1sd**2, rotAngle_parts_1sd**2
 )))
 
 # be careful with initial part configuration prior
-H_theta = ('mvnL', np.zeros(dxA), np.diag((10**2, 10**2, 1**2)))
+# H_theta = ('mvnL', np.zeros(dxA), np.diag((10**2, 10**2, 1**2)))
+H_theta = ('mvnL', np.eye(dxA), np.diag((10**2, 10**2, 1**2)))
 H_E = ('iw', df, df*np.diag((5, 1)))
 
 # true parameters
@@ -55,7 +57,8 @@ zero = np.zeros(dxA)
 
 Q = np.diag(np.diag(iw.rvs(*H_Q[1:])))
 x = np.zeros((T,) + dxGm)
-x[0] = m.expm(m.alg(mvn.rvs(*H_x[1:])))
+# x[0] = m.expm(m.alg(mvn.rvs(*H_x[1:])))
+x[0] = m.expm(m.alg(mvn.rvs( m.algi(m.logm(H_x[1])), H_x[2] ) ))
 
 for t in range(1,T):
   xVec = mvn.rvs(zero, Q)
@@ -66,7 +69,9 @@ E = np.stack([np.diag(np.diag(iw.rvs(*H_E[1:]))) for k in range(K)])
 S = np.stack([iw.rvs(*H_S[1:]) for k in range(K)])
 theta = np.zeros((T,K) + dxGm)
 
-for k in range(K): theta[0,k] = m.expm(m.alg(mvn.rvs(*H_theta[1:])))
+for k in range(K):
+  # theta[0,k] = m.expm(m.alg(mvn.rvs(*H_theta[1:])))
+  theta[0,k] = m.expm(m.alg(mvn.rvs( m.algi(m.logm(H_theta[1])), H_theta[2] ) ))
 
 for t in range(1, T):
   for k in range(K):
@@ -100,17 +105,15 @@ ylim = np.array([ np.min(mins[:,1]), np.max( maxs[:,1] ) ])
 cols = du.diffcolors(2, bgCols=[[1,1,1],[0,0,0]])
 
 # # uncomment if we want to save new dataset
-du.save('%s/data' % path, {
-  'y': y, 'z': z,
-  'H_Q': H_Q, 'H_x': H_x,
-  'H_S': H_S, 'H_theta': H_theta,
-  'H_E': H_E,
-  'Q': Q, 'S': S, 'E': E,
-  'x': x, 'theta': theta, 'z': z,
-  'pi': pi
-})
-
-
+# du.save('%s/data' % path, {
+#   'y': y, 'z': z,
+#   'H_Q': H_Q, 'H_x': H_x,
+#   'H_S': H_S, 'H_theta': H_theta,
+#   'H_E': H_E,
+#   'Q': Q, 'S': S, 'E': E,
+#   'x': x, 'theta': theta, 'z': z,
+#   'pi': pi
+# })
 
 oFake = igp.opts(lie='se2')
 # filename = [ f'{path}/images/img-{t:05}.jpg' for t in range(T) ]

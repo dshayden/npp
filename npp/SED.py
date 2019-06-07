@@ -4,7 +4,7 @@ import numpy as np, argparse, lie, warnings
 from scipy.linalg import block_diag
 from sklearn.mixture import BayesianGaussianMixture as dpgmm 
 from scipy.stats import multivariate_normal as mvn, invwishart as iw
-from scipy.stats import dirichlet
+from scipy.stats import dirichlet, beta as Be
 from scipy.special import logsumexp
 import du, du.stats # move useful functions from these to utils (catrnd)
 import functools
@@ -145,9 +145,9 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     tInit (int or string): Time to initialize parts on, or 'random'
 
   OUTPUT
-    theta (ndarray, [T, K, dt]): K-Part Local dynamic.
-    E (ndarray, [K, dt, dt]): K-Part Local Extent
-    S (ndarray, [K, dt, dt]): K-Part Local Dynamic
+    theta (ndarray, [T, K, dxA]): K-Part Local dynamic.
+    E (ndarray, [K, dxA, dxA]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
     pi (ndarray, [T, K+1]): stick weights, incl. unused portion
   """
@@ -258,7 +258,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   # re-estimate S, E
   return theta, E0, S0, z, pi
 
-def logpdf_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
+def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
   """ Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
 
   INPUT
@@ -291,6 +291,139 @@ def logpdf_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
   if mL_t is not None:
     z_t0 = z_t == -1
     ll += np.sum(mL_t[z_t0])
+
+  return ll
+
+def logpdf_assoc_t(o, z_t, pi):
+  """ Return log-likelihood of z_t | pi.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    z_t (ndarray, [N_t,]): Associations at time t
+    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+
+  OUTPUT
+    ll (float): log-likelihood
+  """
+  logPi = np.log(pi)
+  ll = np.sum( logPi[z_t] )
+
+  # ztNonNeg = z[t][z[t]>=0]
+
+  # ll = 0.0
+
+  # ll += np.sum( logPi[ztNonNeg] )
+  # ll += mL * np.sum(z[t]==-1)
+
+  return ll
+
+  None
+
+def logpdf_parameters(o, alpha, pi, E, S, Q):
+  """ Return log-likelihood, E, S, Q, pi | alpha, H_*
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    alpha (float): Concentration parameter (default: 0.01)
+    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+    E (ndarray, [K, dxA, dxA]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    Q (ndarray, [dxA, dxA]): Latent Dynamic
+
+  OUTPUT
+    ll (float): log-likelihood for parameters
+  """
+  K = len(pi)-1
+  ll = 0.0
+
+  # pi
+  betaPrime = np.zeros_like(pi)
+  betaPrime[0] = pi[0]
+  for k in range(1,len(pi)):
+    betaPrime[k] = pi[k] / np.prod( 1 - betaPrime[:k-1] )
+    betaPrime[k] = np.minimum(1.0-1e-16, np.maximum(0.0, betaPrime[k]))
+  ll += np.sum(Be.logpdf(betaPrime, 1.0, alpha))
+
+  # E, S, Q
+  ll += np.sum( [iw.logpdf(E[k], *o.H_E[1:]) for k in range(K)] )
+  ll += np.sum( [iw.logpdf(S[k], *o.H_S[1:]) for k in range(K)] )
+  ll += iw.logpdf(Q, *o.H_Q[1:])
+  return ll
+
+def logpdf_x_t(o, x_t, x_tminus1, Q):
+  """ Calculate logpdf of x_t | x_{t-1}, Q.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    x_t (ndarray, o.dxGm): Global latent dynamic, time t
+    x_tminus1 (ndarray, o.dxGm): Global latent dynamic, time t-1
+    Q (ndarray, [dxA, dxA]): Latent Dynamic
+  
+  OUTPUT
+    ll (float): log-likelihood
+  """
+  return mvnL_logpdf(o, x_t, x_tminus1, Q)
+
+def logpdf_theta_tk(o, theta_tk, theta_tminus1_k, Sk):
+  """ Calculate logpdf of theta_tk | theta_{(t-1)k}, S_k
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    theta_tk (ndarray, o.dxGm): Part latent dynamic, time t
+    theta_tminus1_k (ndarray, o.dxGm): Part latent dynamic, time t-1
+    Sk (ndarray, [dxA, dxA]): Latent Part Dynamic Noise
+  
+  OUTPUT
+    ll (float): log-likelihood
+  """
+  return mvnL_logpdf(o, theta_tk, theta_tminus1_k, Sk)
+
+def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
+  """ Calculate joint log-likelihood of below:
+
+      p(y, z, x, theta, E, S, Q, pi | H_*, alpha)
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    x (ndarray, [T,] + o.dxGm): Global latent dynamic.
+    theta (ndarray, [T, K, dxA]): K-Part Local dynamic.
+    E (ndarray, [K, dxA, dxA]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    Q (ndarray, [dxA, dxA]): Latent Dynamic
+    alpha (float): Concentration parameter (default: 0.01)
+    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+
+  OUTPUT
+    ll (float): joint log-likelihood
+  """
+  ll = 0.0
+
+  T,K = theta.shape[:2]
+  if mL is None: mL = [ None for t in range(T) ]
+
+  # E, S, Q, pi
+  ll += logpdf_parameters(o, alpha, pi, E, S, Q)
+
+  # time-dependent
+  ## y
+  ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
+    for t in range(T) ])
+  
+  ## z
+  ll += np.sum( [logpdf_assoc_t(o, z[t], pi) for t in range(T)] )
+
+  ## x
+  ll += logpdf_x_t(o, x[1], o.H_x[1], o.H_x[2])
+  ll += np.sum( [logpdf_x_t(o, x[t], x[t-1], Q) for t in range(1,T)] )
+
+  ## theta
+  for k in range(K):
+    ll += logpdf_theta_tk(o, theta[0,k], o.H_theta[1], o.H_theta[2])
+    ll += np.sum( [logpdf_theta_tk(o, theta[t,k], theta[t-1,k], S[k])
+      for t in range(1,T)] )
 
   return ll
 
@@ -531,7 +664,7 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
           allow_singular=True
         )
 
-      ll += logpdf_t(o, y_t, z_t, x_t_proposal, theta_t, E)
+      ll += logpdf_data_t(o, y_t, z_t, x_t_proposal, theta_t, E)
       return ll
 
     # end full conditional functional
@@ -595,7 +728,7 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
   P = kwargs.get('P', 10) # max doubling iterations
 
   theta_tk = theta_tk.copy() # don't modify passed parameter
-  z_tkFake = np.zeros(y_tk.shape[0], dtype=np.int) # fake z_t for logpdf_t
+  z_tkFake = np.zeros(y_tk.shape[0], dtype=np.int) # fake z_t for logpdf_data_t
   for idx in rotIdx:
     p0 = m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk)))
 
@@ -626,7 +759,7 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
           allow_singular=True
         )
      
-      ll += logpdf_t(o, y_tk, z_tkFake, x_t, theta_tk_proposal[np.newaxis],
+      ll += logpdf_data_t(o, y_tk, z_tkFake, x_t, theta_tk_proposal[np.newaxis],
         E_k[np.newaxis])
       # if y_tk.shape[0] > 0:
       #   y_tk_world = y_tk
@@ -729,9 +862,9 @@ def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
 
   OUTPUT
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Relabeled assoc.
-    theta (ndarray, [T, K', dt]): K'-Part Local dynamic.
-    E (ndarray, [K', dt, dt]): K'-Part Local Extent
-    S (ndarray, [K', dt, dt]): K'-Part Local Dynamic
+    theta (ndarray, [T, K', dxA]): K'-Part Local dynamic.
+    E (ndarray, [K', dxA, dxA]): K'-Part Local Extent
+    S (ndarray, [K', dxA, dxA]): K'-Part Local Dynamic
   """
   K, T = ( len(pi)-1, len(z) )
   Nk = kwargs.get('Nk', np.sum(
@@ -794,6 +927,94 @@ def inferPi(o, Nk, alpha):
     pi = np.exp(logPi - logsumexp(logPi))
 
   return pi
+
+def inferE(o, x, theta, y, z):
+  """ Sample E_k from inverse wishart posterior, for all parts k
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    x (ndarray, [T, dxGf]): Global latent dynamics
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+
+  OUTPUT
+    E (ndarray, [K, dy, dy]): K-Part Local Extent (diagonal)
+  """
+  m = getattr(lie, o.lie)
+  T, K = theta.shape[:2]
+  E = np.zeros((K, o.dy, o.dy))
+  for k in range(K):
+    v_E, S_E = o.H_E[1:]
+    S_E = S_E.copy()
+    for t in range(T):
+      ztk = z[t]==k
+      if np.sum(ztk) == 0: continue
+      ytk_world = y[t][ztk]
+      T_part_world = m.inv(x[t].dot(theta[t,k]))
+      ytk_part = TransformPointsNonHomog(T_part_world, ytk_world)
+
+      v_E, S_E = inferNormalInvWishart(v_E, S_E, ytk_part)
+    E[k] = np.diag(np.diag(iw.rvs(v_E, S_E)))
+  return E
+
+def inferSk(o, theta_k):
+  """ Sample S_k from inverse wishart posterior.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    theta_k (ndarray, [T,] + dxGm): Part k latent dynamic.
+
+  OUTPUT
+    S_k (ndarray, [dxA, dxA]): Part k Local Dynamic
+  """
+  m = getattr(lie, o.lie)
+  T = len(theta_k)
+  vS, GammaS = o.H_S[1:]
+  vSkpost = vS + (T-1)
+
+  theta_tkVec = np.zeros((T-1, o.dxA))
+  for t in range(1, T):
+    theta_tkVec[t-1] = m.algi(
+      m.logm( m.inv(theta_k[t-1]).dot(theta_k[t]) )
+    )
+
+  GammaSkpost = GammaS + du.scatter_matrix(theta_tkVec, center=False)
+  S_k = iw.rvs(vSkpost, GammaSkpost)
+
+  # handle poorly conditioned S_k so we can invert it later
+  if np.linalg.cond(S_k) >= 1.0 / np.finfo(S_k.dtype).eps:
+    S_k += np.eye(o.dxA)*1e-6
+  return S_k
+
+def inferQ(o, x):
+  """ Sample Q from inverse wishart posterior.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    x (ndarray, [T,] + o.dxGm): Global latent dynamic.
+
+  OUTPUT
+    Q (ndarray, [dxA, dxA]): Latent Dynamic
+  """
+  m = getattr(lie, o.lie)
+  vQ, GammaQ = o.H_Q[1:]
+  T = len(x)
+  vQpost = vQ + (T-1)
+  xVec = np.zeros((T-1, o.dxA))
+
+  xM = du.asShape(x, (T,) + o.dxGm)
+  for t in range(1,T):
+    xVec[t-1] = m.algi(m.logm(m.inv(xM[t-1]).dot(xM[t])))
+
+  GammaQpost = GammaQ + du.scatter_matrix(xVec, center=False)
+  Q = iw.rvs(vQpost, GammaQpost)
+
+  # handle poorly conditioned Q so we can invert it later
+  if np.linalg.cond(Q) >= 1.0 / np.finfo(Q.dtype).eps:
+    Q += np.eye(o.dxA)*1e-6
+
+  return Q
 
 # todo: move to utils
 def MakeRd(R, d):
@@ -959,3 +1180,38 @@ def inferNormalConditional(x2, H, b, u, S):
   Sigma = H_i.dot(Sigma).dot(H_i.T)
 
   return mu, Sigma
+
+def inferNormalInvWishart(df, S, y):
+  """ Conduct a conjugate Normal-Inverse-Wishart update on the below system:
+
+  p(Sigma | df, S, y) \propto p(Sigma | df, S)   p(y | Sigma)
+                            = IW(Sigma | df, S)  \prod_i N(y_i | 0, Sigma)
+
+  INPUT
+    df (float): prior degrees of freedom
+    S (ndarray, [dy, dy]): prior scale matrix
+    y (ndarray, [N, dy]): centered observations
+
+  OUTPUT
+    df_prime (float): posterior degrees of freedom
+    S_prime (ndarray, [dy, dy]): posterior scale matrix
+  """
+  df_prime = df + y.shape[0]
+  S_prime = S + du.scatter_matrix(y, center=False)
+  return (df_prime, S_prime)
+
+def mvnL_logpdf(o, x, mu, Sigma):
+  """ Evaulate log N_L(x | mu, Sigma) = N( log(mu^{-1} x) | 0, Sigma )
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    x (ndarray, o.dxGm): Manifold input (as matrix)
+    mu (ndarray, o.dxGm): Manifold mean (as matrix)
+    Sigma (ndarray, o.dxGm): Covariance (in tangent plane)
+
+  OUTPUT
+    ll (float): log N_L(x | mu, Sigma)
+  """
+  m = getattr(lie, o.lie)
+  return mvn.logpdf(m.algi(m.logm(m.inv(mu).dot(x))), np.zeros(o.dxA), Sigma,
+    allow_singular=True)

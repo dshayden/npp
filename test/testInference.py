@@ -7,6 +7,7 @@ import numdifftools as nd
 import lie
 import du
 import IPython as ip
+np.set_printoptions(suppress=True, precision=4)
 
 class test_counting_sorting(unittest.TestCase):
   def setUp(s):
@@ -122,7 +123,79 @@ class test_se2_randomwalk10(unittest.TestCase):
     s.QTrue = data['Q']
     s.zTrue = data['z']
     s.piTrue = data['pi']
-    # s.data = data
+    s.data = data
+
+  def test_logJoint(s):
+    alpha = 0.1
+    o = s.o
+    m = getattr(lie, o.lie)
+
+    o.H_Q = s.data['H_Q']
+    o.H_E = s.data['H_E']
+    o.H_S = s.data['H_S']
+    o.H_x = s.data['H_x']
+    o.H_theta = s.data['H_theta']
+
+    pi = np.concatenate((s.piTrue, np.array([alpha,])))
+
+    # todo: handle mL
+    ll = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue, s.STrue,
+      s.QTrue, alpha, pi, mL=None)
+    assert not np.isnan(ll)
+    assert not np.isinf(ll)
+
+  def testInferQ(s):
+    m = getattr(lie, s.o.lie)
+    o = s.o
+
+    # Test with true prior
+    o.H_Q = s.data['H_Q']
+    Q_ = SED.inferQ(s.o, s.xTrue)
+    norm = np.linalg.norm(Q_ - s.QTrue)
+    assert norm <= 2.0, f'bad inferQ, norm: {norm:.6f}'
+
+    # Test with default data-dependent prior
+    SED.initPriorsDataDependent(o, s.y)
+    Q_ = SED.inferQ(s.o, s.xTrue)
+    norm = np.linalg.norm(Q_ - s.QTrue)
+    assert norm <= 10.0, f'bad inferQ, norm: {norm:.6f}'
+
+  def testInferS(s):
+    m = getattr(lie, s.o.lie)
+    o = s.o
+
+    # Test with true prior
+    o.H_S = s.data['H_S']
+    for k in range(s.KTrue):
+      Sk_ = SED.inferSk(s.o, s.thetaTrue[:,k])
+      norm = np.linalg.norm(Sk_ - s.STrue[k])
+      assert norm <= 0.5, f'bad inferSk, norm: {norm:.6f}'
+
+    # Test with default data-dependent prior
+    SED.initPriorsDataDependent(o, s.y)
+    for k in range(s.KTrue):
+      Sk_ = SED.inferSk(s.o, s.thetaTrue[:,k])
+      norm = np.linalg.norm(Sk_ - s.STrue[k])
+      assert norm <= 5.0, f'bad inferSk, norm: {norm:.6f}'
+
+
+  def testInferE(s):
+    m = getattr(lie, s.o.lie)
+    o = s.o
+
+    # Test with true prior
+    o.H_E = s.data['H_E']
+    E_ = SED.inferE(s.o, s.xTrue, s.thetaTrue, s.y, s.zTrue)
+    for k in range(s.KTrue):
+      norm = np.linalg.norm(E_[k] - s.ETrue[k])
+      assert norm <= 1.0, f'bad inferE, norm: {norm:.6f}'
+
+    # Test with default data-dependent prior
+    SED.initPriorsDataDependent(o, s.y)
+    E__ = SED.inferE(s.o, s.xTrue, s.thetaTrue, s.y, s.zTrue)
+    for k in range(s.KTrue):
+      norm = np.linalg.norm(E__[k] - s.ETrue[k])
+      assert norm <= 4.0, f'bad inferE, norm: {norm:.6f}'
 
   def testTranslationX_fwd_noObs(s):
     m = getattr(lie, s.o.lie)
