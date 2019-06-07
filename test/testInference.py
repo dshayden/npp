@@ -8,6 +8,103 @@ import lie
 import du
 import IPython as ip
 
+class test_counting_sorting(unittest.TestCase):
+  def setUp(s):
+    None
+
+  def test_inferPi(s):
+    o = SED.opts()
+    alpha =  0.1
+    Nk = np.array([1,2,3,4], dtype=np.int)
+    pi = SED.inferPi(o, Nk, alpha)
+    assert len(pi) == len(Nk)
+    assert np.isclose(np.sum(pi), 1.0)
+    logPi = np.log(pi) # calculate to ensure no errors
+
+    alpha =  1e-6
+    Nk = np.array([1,2,3,0], dtype=np.int)
+    pi = SED.inferPi(o, Nk, alpha)
+    assert len(pi) == len(Nk)
+    assert np.isclose(np.sum(pi), 1.0)
+    logPi = np.log(pi) # calculate to ensure no errors
+
+    alpha =  1e-6
+    Nk = np.array([10000,20000,30000,0], dtype=np.int)
+    pi = SED.inferPi(o, Nk, alpha)
+    assert len(pi) == len(Nk)
+    assert np.isclose(np.sum(pi), 1.0)
+    logPi = np.log(pi) # calculate to ensure no errors
+
+    alpha =  1e-6
+    Nk = np.array([1], dtype=np.int)
+    pi = SED.inferPi(o, Nk, alpha)
+    assert len(pi) == len(Nk)
+    assert np.isclose(np.sum(pi), 1.0)
+    logPi = np.log(pi) # calculate to ensure no errors
+
+  def test_consolidateExtantParts_relabel(s):
+    o = SED.opts()
+    T, K = (5, 3)
+    Nk = np.array([2, 0, 2, 5])
+    z = [ np.array([-1, 0, -1, 0, 2, -1, 2, -1, -1], dtype=np.int)
+      for t in range(T) ]
+    pi = 0.25*np.ones(K+1)
+
+    theta = np.random.rand(T, K, *o.dxGm)
+    E = np.random.rand(K, o.dy, o.dy)
+    S = np.random.rand(K, o.dxA, o.dxA)
+
+    z_, theta_, E_, S_ = SED.consolidateExtantParts(o, z, pi, theta, E, S)
+    for t in range(T):
+      assert np.sum(z_[t]==0) == Nk[0]
+      assert np.sum(z_[t]==1) == Nk[2]
+      assert np.sum(z_[t]==2) == 0
+      assert np.sum(z_[t]==-1) == Nk[-1]
+
+      assert np.allclose(theta[t][0], theta_[t][0])
+      assert np.allclose(theta[t][2], theta_[t][1])
+    
+    assert np.allclose(E[0], E_[0])
+    assert np.allclose(E[2], E_[1])
+
+    assert np.allclose(S[0], S_[0])
+    assert np.allclose(S[2], S_[1])
+
+  def test_consolidateExtantParts_no_relabel(s):
+    o = SED.opts()
+    T, K = (5, 3)
+    Nk = np.array([2, 1, 2, 4])
+    z = [ np.array([-1, 0, 1, 0, 2, -1, 2, -1, -1], dtype=np.int)
+      for t in range(T) ]
+    pi = 0.25*np.ones(K+1)
+
+    theta = np.random.rand(T, K, *o.dxGm)
+    E = np.random.rand(K, o.dy, o.dy)
+    S = np.random.rand(K, o.dxA, o.dxA)
+
+    z_, theta_, E_, S_ = SED.consolidateExtantParts(o, z, pi, theta, E, S)
+    for t in range(T):
+      for k in range(K):
+        assert np.sum(z_[t]==k) == Nk[k]
+        assert np.allclose(theta[t][k], theta_[t][k])
+
+      assert np.sum(z_[t]==-1) == Nk[-1]
+
+    for k in range(K):
+      assert np.allclose(E[k], E_[k])
+      assert np.allclose(S[k], S_[k])
+
+  def test_getComponentCounts(s):
+    o = SED.opts()
+    z = np.array([0, 1, 0, 2, 3, -1, -1], dtype=np.int)
+    pi = 0.2 * np.ones(len(np.unique(z)))
+    Nk = SED.getComponentCounts(o, z, pi)
+    assert Nk[0] == 2
+    assert Nk[1] == 1
+    assert Nk[2] == 1
+    assert Nk[3] == 1
+    assert Nk[4] == 2
+
 class test_se2_randomwalk10(unittest.TestCase):
   def setUp(s):
     data = du.load('data/synthetic/se2_randomwalk10/data')

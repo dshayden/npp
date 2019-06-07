@@ -4,6 +4,7 @@ import numpy as np, argparse, lie, warnings
 from scipy.linalg import block_diag
 from sklearn.mixture import BayesianGaussianMixture as dpgmm 
 from scipy.stats import multivariate_normal as mvn, invwishart as iw
+from scipy.stats import dirichlet
 from scipy.special import logsumexp
 import du, du.stats # move useful functions from these to utils (catrnd)
 import functools
@@ -17,8 +18,6 @@ def opts(**kwargs):
     H_* (tuple): Prior on * (* = Q, x, S, theta, E)
     lie (string): 'se2' or 'se3' (default: 'se2')
     alpha (float): Concentration parameter (default: 0.01)
-    Q_Diag (bool): Enforce diagonal Global Dynamic Noise Cov
-    S_Diag (bool): Enforce diagonal Local Dynamic Noise Cov
 
   OUTPUT
     o (argparse.Namespace): Algorithm options
@@ -42,9 +41,6 @@ def opts(**kwargs):
   else:
     assert False, 'Only support se2 or se3'
   o.dxGm = (o.dy+1, o.dy+1)
-
-  o.Q_Diag = kwargs.get('Q_Diag', True)
-  o.S_Diag = kwargs.get('S_Diag', True)
 
   return o
 
@@ -260,13 +256,6 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   #     associate
 
   # re-estimate S, E
-
-    # theta (ndarray, [T, K, dt]): K-Part Local dynamic.
-    # E (ndarray, [K, dt, dt]): K-Part Local Extent
-    # S (ndarray, [K, dt, dt]): K-Part Local Dynamic
-    # z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
-    # pi (ndarray, [T, K+1]): stick weights, incl. unused portion
-    #
   return theta, E0, S0, z, pi
 
 def logpdf_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
@@ -326,7 +315,6 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
   OUTPUT
     d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
   """
-  # assert o.Q_Diag, 'Method is only valid for Q_Diag = True'
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
 
@@ -380,23 +368,6 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
       np.sum(y_t[z_tk], axis=0) - Nk*bias)
     )
     mu, Sigma, Sigma_inv = (muNew, SigmaNew, SigmaNew_inv)
-
-  # ## incorporate \prod_n N( y_{tn} | ... )
-  # ### pre-compute observation bias and covariance for each of K parts
-  # obsCov = np.zeros((K, o.dy, o.dy))
-  # bias = np.zeros((K, o.dy))
-  # for k in range(K):
-  #   # if not isObserved[k]: continue
-  #   R_theta_tk, d_theta_tk = m.Rt(theta_t[k])
-  #   R2 = R_x_t.dot(R_theta_tk)
-  #   obsCov[k] = R2.dot(E[k]).dot(R2.T)
-  #   bias[k] = R_x_t.dot(d_theta_tk)
-  #
-  # ### update with each observation
-  # for n in range(y_t.shape[0]):
-  #   k = z_t[n]
-  #   if k >= 0:
-  #     mu, Sigma = inferNormalNormal(y_t[n], obsCov[k], mu, Sigma, b=bias[k])
 
   if kwargs.get('returnMuSigma', False): return mu, Sigma
   else: return mvn.rvs(mu, Sigma)
@@ -474,22 +445,6 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
     )
     mu, Sigma = (muNew, SigmaNew)
 
-    # ## incorporate \prod_n N( y_{tn} | z_{tn}==k, ... )
-    # H = R_x_t
-    # bias = d_x_t
-    # R2 = R_x_t.dot(R_theta_tk)
-    # obsCov = R2.dot(E_k).dot(R2.T)
-    #
-    # ## update with each observation
-    # # TODO: can we do this without a loop?
-    # for n in range(y_tk.shape[0]):
-    #   mu, Sigma = inferNormalNormal(y_tk[n], obsCov, mu, Sigma, b=bias, H=H)
-
-  # sample d_theta_tk
-  # return mu, Sigma
-  # return mu
-  # return mvn.rvs(mu, Sigma)
-
   if kwargs.get('returnMuSigma', False): return mu, Sigma
   else: return mvn.rvs(mu, Sigma)
 
@@ -532,7 +487,6 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
     # Check if we have different Q_tminus1, Q_tplus1
     Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
     noFuture = False
-
 
   # Sample R_x_t | MB(R_x_t) using slice sampler
   if o.lie == 'se2': rotIdx = np.arange(2,3)
@@ -737,12 +691,12 @@ def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
   z[z==K] = -1
   return z
 
-def getComponentCounts(o, z, pi):
+def getComponentCounts(o, z_t, pi):
   """ Count number of observations associated to each component.
 
   INPUT
     o (argparse.Namespace): Algorithm options
-    z (ndarray, [N_1,]): Associations
+    z_t (ndarray, [N_t,]): Associations, -1,..,K-1
     pi (ndarray, [K+1,]): Local association priors for each time
 
   OUTPUT
@@ -750,11 +704,96 @@ def getComponentCounts(o, z, pi):
   """
   K1 = len(pi)
   Nk = np.zeros(K1, dtype=np.int)
-  uniq, cnts = np.unique(z[t], return_counts=True)
+  uniq, cnts = np.unique(z_t, return_counts=True)
   for u, c in zip(uniq, cnts):
     uni = u if u != -1 else -1
     Nk[uni] = c
   return Nk
+
+def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
+  """ Remove parts with no associations, renumber existing parts to 0..(K-1).
+
+  After calling this, pi is no longer valid. Must run inferPi.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [K+1,]): stick-breaking weights.
+    theta (ndarray, [T, K,] + o.dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+
+  KEYWORD INPUT
+    Nk (ndarray, [K+1,]): Pre-computed counts
+    return_alive (bool): Return boolean array of which components survived.
+
+  OUTPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Relabeled assoc.
+    theta (ndarray, [T, K', dt]): K'-Part Local dynamic.
+    E (ndarray, [K', dt, dt]): K'-Part Local Extent
+    S (ndarray, [K', dt, dt]): K'-Part Local Dynamic
+  """
+  K, T = ( len(pi)-1, len(z) )
+  Nk = kwargs.get('Nk', np.sum(
+    [ getComponentCounts(o, z[t], pi) for t in range(T) ],
+    axis=0
+  ))
+  # last entry of Nk is the number of unassigned parts
+
+  # nonzero(Nk) gives the indices of nonzero elements
+  missing = np.setdiff1d(range(K), np.nonzero(Nk)[0])
+  uniq = np.setdiff1d(range(K), missing)
+
+  if len(missing) > 0:
+    # establish relabeling
+    mapping = np.arange(K)
+    for m in missing: mapping[m] = -1
+    alive = mapping >= 0
+    mapping[alive] = np.arange(len(uniq))
+
+    # relabel z
+    z_ = [ -1*np.ones_like(z[t]) for t in range(T) ]
+    for k in uniq:
+      for t in range(T):
+        z_[t][z[t]==k] = mapping[k]
+
+    # reorder parts
+    theta = theta[:, alive]
+    E = E[alive]
+    S = S[alive]
+    
+  else:
+    z_ = z
+
+  if kwargs.get('return_alive', False): return z_, theta, E, S, alive
+  else: return z_, theta, E, S
+
+def inferPi(o, Nk, alpha):
+  """ Sample pi
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    Nk (ndarray, [K+1,]): Observation counts, including unassigned counts.
+    alpha (float): Concentration parameter for infinite sample
+
+  OUTPUT
+    pi (ndarray, [K+1]): mixture weights for K+1 parts
+  """
+  cnts = Nk.astype(np.float)
+
+  # todo: check if alpha should be added even if there are unassigned counts.
+  if cnts[-1] == 0: cnts[-1] = alpha
+  pi = dirichlet.rvs(cnts)[0]
+
+  # enforce no zero entries
+  if np.any(pi == 0):
+    pi[pi==0] += 1e-32
+
+    # renormalize in log domain
+    logPi = np.log(pi)
+    pi = np.exp(logPi - logsumexp(logPi))
+
+  return pi
 
 # todo: move to utils
 def MakeRd(R, d):
