@@ -196,6 +196,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     theta0[i] = util.make_rigid_transform(_R[0], mu[i])
     E0[i] = np.diag(_sigD)
 
+  # sample S from prior
   S0 = [ iw.rvs(*o.H_S[1:]) for k in range(K) ]
 
   theta = np.zeros((T, K) + o.dxGm)
@@ -242,21 +243,15 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     # re-associate
     z[t] = inferZ(o, y[t], pi, theta[t], E0, x[t], mL[t])
 
-  
-  # todo: build out theta trajectory from tInit
-  #   for t in reversed(range(tInit)):
-  #     initialize prediction
-  #     associate
-  #     backward filter
-  #     associate
-  #   for t in range(tInit, T):
-  #     initialize prediction
-  #     associate
-  #     forward filter
-  #     associate
+  # infer S, E
+  S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
+  E = inferE(o, x, theta, y, z)
 
-  # re-estimate S, E
-  return theta, E0, S0, z, pi
+  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
+  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  pi = inferPi(o, Nk, alpha)
+
+  return theta, E, S, z, pi
 
 def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
   """ Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
@@ -1015,6 +1010,246 @@ def inferQ(o, x):
     Q += np.eye(o.dxA)*1e-6
 
   return Q
+
+def samplePartFromPrior(o, T):
+  """ Sample new part from prior.
+    
+    Samples the following:
+      (theta*_1, E*, S*) ~ ( H_theta, H_E, H_S )
+      for t=2:T
+        theta*_t ~ T_theta(theta*_{t-1}, S*)
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    T (int): Number timesteps
+
+  OUTPUT
+    theta (ndarray, [T,] + dxGm): Local dynamic.
+    E (ndarray, [dxA, dxA]): Local Extent
+    S (ndarray, [dxA, dxA]): Local Dynamic
+  """
+  m = getattr(lie, o.lie)
+
+  ## sample extent
+  if o.H_E[0] == 'iw': E = np.diag(np.diag(iw.rvs(*o.H_E[1:])))
+  else: assert False, 'only support H_E[0] == iw'
+
+  ## sample dynamic
+  if o.H_S[0] == 'iw': S = iw.rvs(*o.H_S[1:])
+  else: assert False, 'only support H_S[0] == iw'
+
+  ## sample transformations
+  if o.H_theta[0] == 'mvnL':
+    theta1 = m.expm(m.alg(mvn.rvs(m.algi(m.logm(o.H_theta[1])), o.H_theta[2])))
+  else: assert False, 'only support H_theta[0] == mvnL'
+
+  zero = np.zeros(o.dxA)
+  theta = np.tile(theta1, (T, 1, 1))
+  for t in range(1,T):
+    s_tk = m.expm(m.alg(mvn.rvs(zero, S)))
+    theta[t] = theta[t-1].dot(s_tk)
+  return theta, E, S
+
+def sampleKPartsFromPrior(o, T, K):
+  """ Sample K new parts from prior.
+    
+    Samples the following:
+      (theta*_1, E*, S*) ~ ( H_theta, H_E, H_S )
+      for t=2:T
+        theta*_t ~ T_theta(theta*_{t-1}, S*)
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    T (int): Number timesteps
+    K (int): integer >= 0
+
+  OUTPUT
+    theta (ndarray, [T, K, dt]): Local dynamic.
+    E (ndarray, [K, dt, dt]): Local Extent
+    S (ndarray, [K, dt, dt]): Local Dynamic
+  """
+  if K > 1:
+    parts = [ samplePartFromPrior(o,T) for k in range(K) ]
+    theta, E, S = zip(*parts)
+    E = np.stack(E)
+    S = np.stack(S)
+    theta = np.ascontiguousarray(np.swapaxes(np.stack(theta), 0, 1))
+  elif K == 1:
+    theta, E, S = samplePartFromPrior(o,T)
+    E = E[np.newaxis]
+    S = S[np.newaxis]
+    theta = theta[:,np.newaxis]
+  else:
+    _theta, _E, _S = samplePartFromPrior(o,T)
+    E = np.zeros( (0,) + _E.shape )
+    S = np.zeros( (0,) + _S.shape )
+    theta = np.zeros( (_theta.shape[0], 0, _theta.shape[1]) )
+  return theta, E, S
+
+def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
+  """ Given x, Monte Carlo estimate log marginal likelihood of each y_{tn}
+
+      {theta, E, S} are assumed to be a set of particles sampled from the prior
+        p(theta_{1:T}, E, S) = p(E) p(S) \prod_t p(theta_t | theta_{t-1})
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    x (ndarray, [T,] + dxGm]): Global latent dynamic.
+    theta (ndarray, [T,K*] + dxGm): Local dynamic.
+    E (ndarray, [K*, dy, dy]): Local Extent
+    S (ndarray, [K*, dxA, dxA]): Local Dynamic
+
+  OUTPUT
+    mL (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): marginal LL of obs
+  """
+  m = getattr(lie, o.lie)
+  T, K = theta.shape[:2]
+
+  zeroObs = np.zeros(o.dy)
+  def obsLL(k):
+    """ Return data ll (ndarray, [N_1, ..., N_T]) for part k. """
+    ll = [ None for t in range(T) ]
+    for t in range(T):
+      y_tk_world = y[t]
+      T_part_world = m.inv( x[t].dot(theta[t][k]) )
+      y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
+      ll[t] = mvn.logpdf(y_tk_part, zeroObs, E[k], allow_singular=True)
+    return ll
+
+  # K-list of T-list of N_t
+  ## Average in log domain:
+  ##   log( (1/K)*\sum_k a_k ) = lse( exp(log(a_{1:K})) ) - log(K)
+  mL_all = [ obsLL(k) for k in range(K) ]
+
+  mL = [ [] for t in range(T) ]
+  for t in range(T):
+    arr = np.array( [ mL_all[k][t] for k in range(K) ] ) # K x N_t
+    mL[t] = logsumexp(arr, axis=0) - np.log(K) # N_t
+
+  return mL
+
+def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan):
+  """ Save sample to disk.
+
+  INPUT
+    filename (str): file to load
+    o (argparse.Namespace): Algorithm options
+    alpha (float): Concentration parameter, default 1e-3
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    ll (float): joint log-likelihood
+  """
+  dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
+    ll=ll)
+  du.save(filename, dct)
+
+def loadSample(filename):
+  """ Load sample from disk.
+
+  INPUT
+    filename (str): file to load
+
+  OUTPUT
+    o (argparse.Namespace): Algorithm options
+    alpha (float): Concentration parameter, default 1e-3
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    ll (float): joint log-likelihood
+  """
+  d = du.load(filename)
+  o, alpha, z, pi, theta, E, S, x, Q, ll = \
+    (d['o'], d['alpha'], d['z'], d['pi'], d['theta'], d['E'], d['S'], d['x'],
+     d['Q'], d['ll'])
+  return o, alpha, z, pi, theta, E, S, x, Q, ll
+
+# todo: allow new part sampling
+def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
+  """ Perform full gibbs ssampling pass. Input values will be overwritten.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    alpha (float): Concentration parameter, default 1e-3
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+
+  OUTPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    ll (float): joint log-likelihood
+  """
+  T, K = ( len(y), len(pi)-1 )
+
+  for t in range(T):
+    for k in range(K):
+      # sample theta_tk
+      if t==0: thetaPrev, SPrev = ( o.H_theta[1], o.H_theta[2] )
+      else: thetaPrev, SPrev = ( theta[t-1,k], S[k] )
+      if t==T-1: thetaNext, SNext = ( None, None )
+      else: thetaNext, SNext = ( theta[t+1,k], S[k] )
+      thetaPredict = theta[t,k]
+      y_tk = y[t][z[t]==k]
+
+      thetaPredict[:-1,:-1] = sampleRotationTheta(o, y_tk, thetaPredict, x[t],
+        SPrev, E[k], thetaPrev, theta_tplus1_k=thetaNext, S_tplus1_k=SNext)
+      thetaPredict[:-1,-1] = sampleTranslationTheta(o, y_tk, thetaPredict, x[t],
+        SPrev, E[k], thetaPrev, theta_tplus1_k=thetaNext, S_tplus1_k=SNext)
+
+      theta[t,k] = thetaPredict
+
+    # sample x_t
+    if t==0: xPrev, QPrev = ( o.H_x[1], o.H_x[2] )
+    else: xPrev, QPrev = ( x[t-1], Q )
+    if t==T-1: xNext, QNext = ( None, None )
+    else: xNext, QNext = ( x[t+1], Q )
+    xPredict = x[t]
+
+    xPredict[:-1,:-1] = sampleRotationX(o, y[t], z[t], xPredict, theta[t], E,
+      QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
+    xPredict[:-1,-1] = sampleTranslationX(o, y[t], z[t], xPredict, theta[t], E,
+      QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
+    x[t] = xPredict
+
+    # sample z_t
+    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+
+  # consolidate then sample pi
+  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
+  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  pi = inferPi(o, Nk, alpha)
+  K = len(pi) - 1
+
+  # sample E, S, Q
+  Q = inferQ(o, x)
+  S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
+  E = inferE(o, x, theta, y, z)
+
+  # compute log-likelihood
+  ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+
+  return z, pi, theta, E, S, x, Q, ll
 
 # todo: move to utils
 def MakeRd(R, d):

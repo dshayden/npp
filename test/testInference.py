@@ -125,6 +125,58 @@ class test_se2_randomwalk10(unittest.TestCase):
     s.piTrue = data['pi']
     s.data = data
 
+  def test_logMarginalPartLikelihoodMonteCarlo(s):
+    o = s.o
+    o.H_S = s.data['H_S']
+    o.H_E = s.data['H_E']
+    o.H_theta = s.data['H_theta']
+    T, K = (len(s.y), 100)
+
+    try:
+      theta, E, S = SED.sampleKPartsFromPrior(s.o, T, K)
+      mL = SED.logMarginalPartLikelihoodMonteCarlo(o, s.y, s.xTrue, theta, E, S)
+    except:
+      assert False, 'problem with logMarginalPartLikelihoodMonteCarlo'
+    
+  def test_sampleKPartsFromPrior(s):
+    o = s.o
+    o.H_S = s.data['H_S']
+    o.H_E = s.data['H_E']
+    o.H_theta = s.data['H_theta']
+    T, K = (5, 10)
+
+    theta, E, S = SED.sampleKPartsFromPrior(s.o, T, K)
+    assert theta.shape[0] == T
+    assert theta.shape[1] == K
+    assert E.shape[0] == K
+    assert S.shape[0] == K
+    for t in range(T):
+      for k in range(K):
+        assert np.isclose(np.linalg.det(theta[t,k,:-1,:-1]), 1.0)
+        for i in range(o.dy):
+          assert theta[t,k,-1,i] == 0
+        assert theta[t,k,-1,-1] == 1.0
+
+    T, K = (5, 1)
+    theta, E, S = SED.sampleKPartsFromPrior(s.o, T, K)
+    assert theta.shape[0] == T
+    assert theta.shape[1] == K
+    assert E.shape[0] == K
+    assert S.shape[0] == K
+    for t in range(T):
+      for k in range(K):
+        assert np.isclose(np.linalg.det(theta[t,k,:-1,:-1]), 1.0)
+        for i in range(o.dy):
+          assert theta[t,k,-1,i] == 0
+        assert theta[t,k,-1,-1] == 1.0
+
+    T, K = (5, 0)
+    theta, E, S = SED.sampleKPartsFromPrior(s.o, T, K)
+    assert theta.shape[0] == T
+    assert theta.shape[1] == K
+    assert E.shape[0] == K
+    assert S.shape[0] == K
+
   def test_logJoint(s):
     alpha = 0.1
     o = s.o
@@ -508,3 +560,63 @@ class test_se2_randomwalk10(unittest.TestCase):
         norm = np.linalg.norm(map_est.x - mu)
         assert norm < 1e-2, \
           f'SED.sampleTranslationTheta bad, norm {norm:.6f}'
+
+class test_se2_randomwalk3(unittest.TestCase):
+  def setUp(s):
+    data = du.load('data/synthetic/se2_randomwalk3/data')
+    s.o = SED.opts(lie='se2')
+    s.T = len(data['x'])
+    s.y = data['y']
+
+    # Ground-truth
+    ## this is probably wrong, probably need shape[1]
+    s.KTrue = data['theta'].shape[1]
+    s.xTrue = du.asShape(data['x'], (s.T,) + s.o.dxGm)
+    s.thetaTrue = data['theta']
+    s.ETrue = data['E']
+    s.STrue = data['S']
+    s.QTrue = data['Q']
+    s.zTrue = data['z']
+    s.piTrue = data['pi']
+    s.data = data
+
+  def testInit(s):
+    alpha = 0.1
+    nParticles = 100
+
+    o = s.o
+    SED.initPriorsDataDependent(o, s.y)
+    x = SED.initXDataMeans(o, s.y)
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, s.T, nParticles)
+    mL = SED.logMarginalPartLikelihoodMonteCarlo(o, s.y, x, theta_, E_, S_)
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, s.y, x, alpha, mL)
+    Q = SED.inferQ(o, x)
+
+    nSamples = 50
+    ll = np.zeros(nSamples)
+    for nS in range(nSamples):
+      z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, s.y, alpha, z, pi,
+        theta, E, S, x, Q, mL)
+      Nk = np.sum([SED.getComponentCounts(o, z[t], pi)
+        for t in range(s.T)], axis=0)
+      print(nS, Nk[-1])
+
+
+    import matplotlib.pyplot as plt
+    from npp import drawSED
+    plt.plot(ll, label='Samples', c='b');
+    piTrue = np.concatenate((s.piTrue, np.array([alpha,])))
+    llTrue = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue,
+      s.STrue, s.QTrue, alpha, s.piTrue, mL)
+    plt.axhline(llTrue, label='True', c='g')
+    plt.legend()
+    plt.show()
+    drawSED.draw(o, y=s.y, x=x, z=z, theta=theta, E=E)
+    plt.show()
+
+    ## quick test of save and load
+    # filename = 'tmp-123'
+    # SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan)
+    # o, alpha, z, pi, theta, E, S, x, Q, ll = SED.loadSample(filename)
+    #
+    # ip.embed()

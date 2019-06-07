@@ -11,7 +11,9 @@ import IPython as ip
 import os
 
 
-path = 'data/synthetic/se2_randomwalk10'
+# path = 'data/synthetic/se2_randomwalk10'
+path = 'data/synthetic/se2_randomwalk3'
+
 # os.makedirs(path)
 try: os.makedirs(path)
 except: None
@@ -28,7 +30,8 @@ transY_object_1sd = 3.0
 rotAngle_object_1sd = 15.0 * np.pi/180.
 
 T = 5
-K = 10
+# K = 10
+K = 3
 Nt = [ 300 for t in range(T) ]
 m = getattr(lie, group)
 dxGf = m.n**2
@@ -41,14 +44,12 @@ df = 1000
 H_Q = ('iw', df, df*np.diag((
   transX_object_1sd**2, transY_object_1sd**2, rotAngle_object_1sd**2
 )))
-# H_x = ('mvnL', np.zeros(dxA), .01*np.eye(dxA))
 H_x = ('mvnL', np.eye(dxA), .01*np.eye(dxA))
 H_S = ('iw', df, df*np.diag((
   transX_parts_1sd**2, transY_parts_1sd**2, rotAngle_parts_1sd**2
 )))
 
 # be careful with initial part configuration prior
-# H_theta = ('mvnL', np.zeros(dxA), np.diag((10**2, 10**2, 1**2)))
 H_theta = ('mvnL', np.eye(dxA), np.diag((10**2, 10**2, 1**2)))
 H_E = ('iw', df, df*np.diag((5, 1)))
 
@@ -57,7 +58,6 @@ zero = np.zeros(dxA)
 
 Q = np.diag(np.diag(iw.rvs(*H_Q[1:])))
 x = np.zeros((T,) + dxGm)
-# x[0] = m.expm(m.alg(mvn.rvs(*H_x[1:])))
 x[0] = m.expm(m.alg(mvn.rvs( m.algi(m.logm(H_x[1])), H_x[2] ) ))
 
 for t in range(1,T):
@@ -70,7 +70,6 @@ S = np.stack([iw.rvs(*H_S[1:]) for k in range(K)])
 theta = np.zeros((T,K) + dxGm)
 
 for k in range(K):
-  # theta[0,k] = m.expm(m.alg(mvn.rvs(*H_theta[1:])))
   theta[0,k] = m.expm(m.alg(mvn.rvs( m.algi(m.logm(H_theta[1])), H_theta[2] ) ))
 
 for t in range(1, T):
