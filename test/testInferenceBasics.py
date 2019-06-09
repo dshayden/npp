@@ -13,6 +13,32 @@ class test_random(unittest.TestCase):
   def setUp(s):
     None
 
+  def test_rotation_symmetries_se2(s):
+    T, K, N, grp = (3, 1, 10, 'se2')
+    o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
+    m = getattr(lie, o.lie)
+
+    # show that logpdf_data_t is same for rotation symmetries of theta
+    t,k = (1,0)
+    symmetries = util.rotation_symmetries(theta[t,k])
+    lls = [ SED.logpdf_data_t(o, y[t], z[t], x[t], sym[np.newaxis], E)
+      for sym in symmetries ]
+    assert np.all( [np.isclose(ll_, lls[0]) for ll_ in lls] )
+
+  def test_rotation_symmetries_se3(s):
+    T, K, N, grp = (3, 1, 1000, 'se3')
+    o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
+    m = getattr(lie, o.lie)
+
+    # show that logpdf_data_t is same for rotation symmetries of theta
+    t,k = (1,0)
+    symmetries = util.rotation_symmetries(theta[t,k])
+
+    lls = [ SED.logpdf_data_t(o, y[t], z[t], x[t], sym[np.newaxis], E)
+      for sym in symmetries ]
+
+    assert np.all( [ np.isclose(ll_, lls[0]) for ll_ in lls ] )
+    
   def test_decomp(s):
     T, K, N, grp = (3, 1, 0, 'se2')
     o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
@@ -51,7 +77,7 @@ class test_random(unittest.TestCase):
     norm = np.linalg.norm(u_x_tplus1 - V_x_t_x_tplus1_inv.dot(d_x_t_x_tplus1))
     assert norm < 1e-8, 'bad norm'
 
-  def test_xFwd2(s):
+  def test_xFwd_se2(s):
     T, K, N, grp = (6, 1, 0, 'se2')
     o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
     m = getattr(lie, o.lie)
@@ -65,7 +91,7 @@ class test_random(unittest.TestCase):
     V_x_tminus1_x_t_inv = m.getVi( m.inv(x[t-1]).dot(x[t]) )
     H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
     b = -H.dot(d_x_tminus1)
-    u = np.zeros(3)
+    u = np.zeros(o.dxA)
     x2 = np.array([ m.algi(m.logm( m.inv(x[t-1]).dot(x[t]) ))[-1] ])
 
     mu, Sigma = SED.inferNormalConditional(x2, H, b, u, Q)
@@ -104,7 +130,7 @@ class test_random(unittest.TestCase):
     # plt.legend()
     # plt.show()
 
-  def test_xFwdBack2(s):
+  def test_xFwdBack_se2(s):
     T, K, N, grp = (7, 1, 0, 'se2')
     o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
     m = getattr(lie, o.lie)
@@ -119,7 +145,7 @@ class test_random(unittest.TestCase):
     V_x_tminus1_x_t_inv = m.getVi( m.inv(x[t-1]).dot(x[t]) )
     H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
     b = -H.dot(d_x_tminus1)
-    u = np.zeros(3)
+    u = np.zeros(o.dxA)
     x2 = np.array([ m.algi(m.logm( m.inv(x[t-1]).dot(x[t]) ))[-1] ])
 
     V_x_t_x_tplus1_inv = m.getVi( m.inv(x[t]).dot(x[t+1]) )
@@ -309,3 +335,91 @@ class test_random(unittest.TestCase):
     norm = np.linalg.norm(map_est.x - mu)
     # print(f'norm: {norm:.12f}')
     assert norm < 1e-2, f'SED.inferNormalConditional bad, norm {norm:.6f}'
+
+  def test_xFwd_se3(s):
+    T, K, N, grp = (6, 1, 0, 'se3')
+    o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
+    m = getattr(lie, o.lie)
+
+    # infer d_x_t in forward direction
+    t = 5
+    
+    R_x_tminus1, d_x_tminus1 = m.Rt(x[t-1])
+    R_x_t, _ = m.Rt(x[t])
+
+    V_x_tminus1_x_t_inv = m.getVi( m.inv(x[t-1]).dot(x[t]) )
+    H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
+    b = -H.dot(d_x_tminus1)
+    u = np.zeros(o.dxA)
+    x2 = m.algi(m.logm( m.inv(x[t-1]).dot(x[t]) ))[o.dy:o.dxA]
+
+    mu, Sigma = SED.inferNormalConditional(x2, H, b, u, Q)
+
+    # determine mu as MAP estimate
+    Qi = np.linalg.inv(Q)
+    def nllNormalConditional(d_x_t):
+      x_t = util.make_rigid_transform(R_x_t, d_x_t)
+
+      t1 = m.algi(m.logm( m.inv(x[t-1]).dot(x_t) ))
+      nll = 0.5 * t1.dot(Qi).dot(t1)
+
+      return nll
+
+    g = nd.Gradient(nllNormalConditional)
+    map_est = so.minimize(nllNormalConditional, np.zeros(o.dy),
+      method='BFGS', jac=g)
+
+    norm = np.linalg.norm(map_est.x - mu)
+    # print(f'norm: {norm:.12f}')
+    assert norm < 1e-2, f'SED.inferNormalConditional bad, norm {norm:.2f}'
+
+  def test_xFwdBack_se3(s):
+    T, K, N, grp = (7, 1, 0, 'se3')
+    o, x, theta, E, S, Q, y, z = tu.GenerateRandomDataset(T, K, N, grp)
+    m = getattr(lie, o.lie)
+
+    # infer d_x_t in full conditional
+    t = 5   
+    
+    R_x_tminus1, d_x_tminus1 = m.Rt(x[t-1])
+    R_x_tplus1, d_x_tplus1 = m.Rt(x[t+1])
+    R_x_t, _ = m.Rt(x[t])
+
+    V_x_tminus1_x_t_inv = m.getVi( m.inv(x[t-1]).dot(x[t]) )
+    H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
+    b = -H.dot(d_x_tminus1)
+    u = np.zeros(o.dxA)
+    x2 = m.algi(m.logm( m.inv(x[t-1]).dot(x[t]) ))[o.dy:o.dxA]
+
+    V_x_t_x_tplus1_inv = m.getVi( m.inv(x[t]).dot(x[t+1]) )
+
+    H_ = -V_x_t_x_tplus1_inv.dot(R_x_t.T)
+    b_ = -H_.dot(d_x_tplus1)
+    u_ = np.zeros(o.dxA)
+
+    x2_ = m.algi(m.logm( m.inv(x[t]).dot(x[t+1]) ))[o.dy:o.dxA]
+    Q_ = Q
+
+    mu, Sigma = SED.inferNormalConditionalNormal(
+      x2, H, b, u, Q, x2_, H_, b_, u_, Q_)
+
+    # determine mu as MAP estimate
+    Qi = np.linalg.inv(Q)
+    def nllNormalConditional2(d_x_t):
+      x_t = util.make_rigid_transform(R_x_t, d_x_t)
+
+      t1 = m.algi(m.logm( m.inv(x[t-1]).dot(x_t) ))
+      nll = 0.5 * t1.dot(Qi).dot(t1)
+
+      t2 = m.algi(m.logm( m.inv(x_t).dot(x[t+1]) ))
+      nll += 0.5 * t2.dot(Qi).dot(t2)
+
+      return nll
+
+    g = nd.Gradient(nllNormalConditional2)
+    map_est = so.minimize(nllNormalConditional2, np.zeros(o.dy),
+      method='BFGS', jac=g)
+
+    norm = np.linalg.norm(map_est.x - mu)
+    # print(f'norm: {norm:.12f}')
+    assert norm < 1e-2, f'SED.inferNormalConditional bad, norm {norm:.2f}'

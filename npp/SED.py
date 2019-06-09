@@ -143,6 +143,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     nInit (int): Max seeds for initial clustering (default: 1)
     nIter (int): Max iterations per seed (default: 100)
     tInit (int or string): Time to initialize parts on, or 'random'
+    fixedBreaks (bool): Force number of components to maxBreaks
 
   OUTPUT
     theta (ndarray, [T, K, dxA]): K-Part Local dynamic.
@@ -165,8 +166,17 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   maxBreaks = kwargs.get('maxBreaks', 20)
   nInit = kwargs.get('nInit', 1)
   nIter = kwargs.get('nIter', 100)
-  bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
-    weight_concentration_prior=alpha)
+
+  if not kwargs.get('fixedBreaks', False):
+    # nonparametric
+    bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
+      weight_concentration_prior=alpha)
+  else:
+    # parametric
+    bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
+      weight_concentration_prior=alpha,
+      weight_concentration_prior_type='dirichlet_distribution')
+
   with warnings.catch_warnings():
     warnings.filterwarnings("ignore")
     bgmm.fit(yObj[tInit])
@@ -595,12 +605,14 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
     nRotationSamples (int): length of markov chain for rotation slice sampler
     w (float): characteristic width of slice sampler, def: np.pi / 100
     P (float): max doubling iterations of slice sampler def: 10
+    handleSymmetries (bool): MCMC mode hop as a final step
 
   OUTPUT
     R_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
   """
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
+  d_x_t = x_t[:-1,-1].copy()
 
   nRotationSamples = kwargs.get('nRotationSamples', 10)
   if nRotationSamples == 0:
@@ -674,6 +686,22 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
     x_t = x_tminus1.dot(m.expm(m.alg(p)))
   # end loop over rotation coordinates
 
+  # set us back to original translation
+  ## todo: check if this is necessary
+  x_t[:-1,-1] = d_x_t
+
+  # handle rotation symmetries
+  if kwargs.get('handleSymmetries', True):
+    def dynamicsLL(x_t_candidate):
+      ll = mvnL_logpdf(o, x_t_candidate, x_tminus1, Q_tminus1)
+      if not noFuture: ll += mvnL_logpdf(o, x_tplus1, x_t_candidate, Q_tplus1)
+      return ll
+    
+    # build all possible x_t_candidates from rotation symmetries
+    x_t_candidates = util.rotation_symmetries(x_t)
+    lls = [ dynamicsLL(x_t_candidate) for x_t_candidate in x_t_candidates ]
+    x_t = x_t_candidates[np.argmax(lls)]
+
   R_x_t, _ = m.Rt(x_t)
   return R_x_t 
 
@@ -695,11 +723,14 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
     nRotationSamples (int): length of markov chain for rotation slice sampler
     w (float): characteristic width of slice sampler, def: np.pi / 100
     P (float): max doubling iterations of slice sampler def: 10
+    handleSymmetries (bool): MCMC mode hop as a final step
 
   OUTPUT
     R_theta_tk (ndarray, [dy, dy]): Sampled rotation estimate.
   """
   m = getattr(lie, o.lie)
+  d_theta_tk = theta_tk[:-1,-1]
+
   nRotationSamples = kwargs.get('nRotationSamples', 10)
   if nRotationSamples == 0:
     R_theta_tk, _ = m.Rt(theta_tk)
@@ -775,6 +806,21 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
     p[idx] = theta_tk_sample_angles[-1]
     theta_tk = theta_tminus1_k.dot(m.expm(m.alg(p)))
   # end loop over rotation coordinates
+
+  theta_tk[:-1,-1] = d_theta_tk
+  # handle rotation symmetries
+  if kwargs.get('handleSymmetries', True):
+    def dynamicsLL(theta_tk_candidate):
+      ll = mvnL_logpdf(o, theta_tk_candidate, theta_tminus1_k, S_tminus1_k)
+      if not noFuture:
+        ll += mvnL_logpdf(o, theta_tplus1_k, theta_tk_candidate, S_tplus1_k)
+      return ll
+    
+    # build all possible x_t_candidates from rotation symmetries
+    theta_tk_candidates = util.rotation_symmetries(theta_tk)
+    lls = [ dynamicsLL(theta_tk_candidate) for theta_tk_candidate in
+      theta_tk_candidates ]
+    theta_tk = theta_tk_candidates[np.argmax(lls)]
 
   R_theta_tk, _ = m.Rt(theta_tk)
   return R_theta_tk

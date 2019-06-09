@@ -9,9 +9,26 @@ def GenerateRandomDataset(T, K, N, grp):
   zeroAlgebra = np.zeros(o.dxA)
   zeroObs = np.zeros(o.dy)
 
-  E = np.stack([iw.rvs(1000, 1000*np.diag([1.0, 5.0])) for k in range(K)])
-  S = np.stack([iw.rvs(1000, 1000*np.diag([.2,.1,.01])) for k in range(K)])
-  Q = iw.rvs(1000, 1000*np.diag([.5,.3,.01]))
+  if grp == 'se2':
+    c = 1000
+    E_scatter = np.diag([1.0, 5.0])
+    S_scatter = np.diag([0.2, 0.1, 0.01])
+    Q_scatter = 3*S_scatter
+
+    # E = np.stack([iw.rvs(c, c*E_scatter) for k in range(K)])
+    E = np.stack([np.diag(np.diag(iw.rvs(c, c*E_scatter))) for k in range(K)])
+    S = np.stack([iw.rvs(c, c*S_scatter) for k in range(K)])
+    Q = iw.rvs(c, c*Q_scatter)
+  elif grp == 'se3':
+    c = 1000
+    E_scatter = np.diag([1.0, 5.0, 0.1])
+    S_scatter = np.diag([.2, .1, .3, .1, .01, .001])
+    Q_scatter = 3*S_scatter
+    # E = np.stack([iw.rvs(c, c*E_scatter) for k in range(K)])
+    E = np.stack([np.diag(np.diag(iw.rvs(c, c*E_scatter))) for k in range(K)])
+    S = np.stack([iw.rvs(c, c*S_scatter) for k in range(K)])
+    Q = iw.rvs(c, c*Q_scatter)
+  else: assert False, 'Only support se(2) and se(3)'
 
   x = np.tile(np.eye(o.dy+1), [T,1,1])
   theta = np.tile(np.eye(o.dy+1), [T,K,1,1])

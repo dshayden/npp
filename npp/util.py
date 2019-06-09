@@ -3,6 +3,24 @@ import scipy.linalg as sla
 import itertools
 import functools, du
 
+def rotation_symmetries(T):
+  """ Return rotation symmetries of rigid transformation T. """
+  if T.shape == (3,3):
+   syms = [ ( [0, 1], [0, 1] ), ]
+  elif T.shape == (4,4):
+    syms = [ ( [0, 1], [0, 1] ), 
+             ( [0, 2], [0, 2] ),
+             ( [1, 2], [1, 2] ) ]
+  else: assert False, 'Only support SE(2) or SE(3) inputs'
+  nSym = len(syms)
+  dim = T.shape[0]
+  symmetries = np.tile(T, [nSym+1, 1, 1])
+  for n in range(nSym):
+    eye = np.eye(dim)
+    eye[syms[n]] *= -1
+    symmetries[n+1] = T.dot(eye)
+  return symmetries
+
 def rigid_from_obs(y):
   # y is assumed to have trailing 1
   mu = np.mean(y[:,:-1], axis=0)
