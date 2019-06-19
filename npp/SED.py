@@ -12,7 +12,7 @@ import functools
 import IPython as ip
 
 def opts(**kwargs):
-  """ Construct algorithm options
+  r''' Construct algorithm options
 
   KEYWORD INPUT
     H_* (tuple): Prior on * (* = Q, x, S, theta, E)
@@ -21,7 +21,7 @@ def opts(**kwargs):
 
   OUTPUT
     o (argparse.Namespace): Algorithm options
-  """
+  ''' 
   o = argparse.Namespace()
 
   # priors are parameter tuples, first element is string
@@ -45,7 +45,7 @@ def opts(**kwargs):
   return o
 
 def initPriorsDataDependent(o, y, **kwargs):
-  """ Construct data-dependent priors from observations y. In-place modify o.
+  r''' Construct data-dependent priors from observations y. In-place modify o.
 
   Priors are constructed for
     H_* (tuple): (* = Q, x, S, theta, E)
@@ -62,7 +62,7 @@ def initPriorsDataDependent(o, y, **kwargs):
     dfE (float): Degrees of freedom prior for E
     scaleE (float): Expected part rotation magnitude (degrees).
     rotX (float): Expected initial body rotation (degrees)
-  """
+  '''
   m = getattr(lie, o.lie)
   def d2r(d): return d * (np.pi / 180.)
 
@@ -113,7 +113,7 @@ def initPriorsDataDependent(o, y, **kwargs):
   o.H_theta = ('mvnL', muTheta, SigmaTheta)
 
 def initXDataMeans(o, y):
-  """ Initialize x with no rotation and translation as observed data means.
+  r''' Initialize x with no rotation and translation as observed data means.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -121,7 +121,7 @@ def initXDataMeans(o, y):
 
   OUTPUT
     x (ndarray, [T,] + o.dxGm): Global latent dynamic.
-  """
+  '''
   T = len(y)
   y_mu = np.stack( [ np.mean(y[t], axis=0) for t in range(T) ] )
   x = np.tile( np.eye(o.dy+1), [T, 1, 1] )
@@ -129,7 +129,7 @@ def initXDataMeans(o, y):
   return x
 
 def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
-  """ Initialize parts (theta, E, S) and associations z using static DP.
+  r''' Initialize parts (theta, E, S) and associations z using static DP.
   
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -151,7 +151,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
     pi (ndarray, [T, K+1]): stick weights, incl. unused portion
-  """
+  '''
   # Transform y to object frame of reference
   m = getattr(lie, o.lie)
   T = len(y)
@@ -264,7 +264,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   return theta, E, S, z, pi
 
 def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
-  """ Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
+  r''' Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -277,7 +277,7 @@ def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
 
   OUTPUT
     ll (float): log-likelihood for time t
-  """
+  '''
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
   zeroObs = np.zeros(o.dy)
@@ -300,7 +300,7 @@ def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
   return ll
 
 def logpdf_assoc_t(o, z_t, pi):
-  """ Return log-likelihood of z_t | pi.
+  r''' Return log-likelihood of z_t | pi.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -309,7 +309,7 @@ def logpdf_assoc_t(o, z_t, pi):
 
   OUTPUT
     ll (float): log-likelihood
-  """
+  '''
   logPi = np.log(pi)
   ll = np.sum( logPi[z_t] )
 
@@ -325,7 +325,7 @@ def logpdf_assoc_t(o, z_t, pi):
   None
 
 def logpdf_parameters(o, alpha, pi, E, S, Q):
-  """ Return log-likelihood, E, S, Q, pi | alpha, H_*
+  r''' Return log-likelihood, E, S, Q, pi | alpha, H_*
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -337,7 +337,7 @@ def logpdf_parameters(o, alpha, pi, E, S, Q):
 
   OUTPUT
     ll (float): log-likelihood for parameters
-  """
+  '''
   K = len(pi)-1
   ll = 0.0
 
@@ -356,7 +356,7 @@ def logpdf_parameters(o, alpha, pi, E, S, Q):
   return ll
 
 def logpdf_x_t(o, x_t, x_tminus1, Q):
-  """ Calculate logpdf of x_t | x_{t-1}, Q.
+  r''' Calculate logpdf of x_t | x_{t-1}, Q.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -366,11 +366,11 @@ def logpdf_x_t(o, x_t, x_tminus1, Q):
   
   OUTPUT
     ll (float): log-likelihood
-  """
+  '''
   return mvnL_logpdf(o, x_t, x_tminus1, Q)
 
 def logpdf_theta_tk(o, theta_tk, theta_tminus1_k, Sk):
-  """ Calculate logpdf of theta_tk | theta_{(t-1)k}, S_k
+  r''' Calculate logpdf of theta_tk | theta_{(t-1)k}, S_k
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -380,11 +380,11 @@ def logpdf_theta_tk(o, theta_tk, theta_tminus1_k, Sk):
   
   OUTPUT
     ll (float): log-likelihood
-  """
+  '''
   return mvnL_logpdf(o, theta_tk, theta_tminus1_k, Sk)
 
 def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
-  """ Calculate joint log-likelihood of below:
+  r''' Calculate joint log-likelihood of below:
 
       p(y, z, x, theta, E, S, Q, pi | H_*, alpha)
 
@@ -403,7 +403,7 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
 
   OUTPUT
     ll (float): joint log-likelihood
-  """
+  '''
   ll = 0.0
 
   T,K = theta.shape[:2]
@@ -433,7 +433,7 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
   return ll
 
 def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
-  """ Sample translation component d_x_t of x_t, allowing for correlation.
+  r''' Sample translation component d_x_t of x_t, allowing for correlation.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -452,7 +452,7 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
 
   OUTPUT
     d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
-  """
+  '''
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
 
@@ -511,7 +511,7 @@ def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwa
   else: return mvn.rvs(mu, Sigma)
 
 def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
-  """ Sample translation component d_theta_tk of theta_tk
+  r''' Sample translation component d_theta_tk of theta_tk
 
   INPUT
      (argparse.Namespace): Algorithm options
@@ -529,7 +529,7 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
 
   OUTPUT
     d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
-  """
+  '''
   m = getattr(lie, o.lie)
 
   # Are we sampling from forward filter (past only) or full conditional?
@@ -587,7 +587,7 @@ def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminu
   else: return mvn.rvs(mu, Sigma)
 
 def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
-  """ Sample translation component d_x_t of x_t
+  r''' Sample translation component d_x_t of x_t
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -609,7 +609,7 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
 
   OUTPUT
     R_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
-  """
+  '''
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
   d_x_t = x_t[:-1,-1].copy()
@@ -706,7 +706,7 @@ def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs
   return R_x_t 
 
 def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
-  """ sample R_theta_tk | MB(R_theta_tk) using slice sampler
+  r''' sample R_theta_tk | MB(R_theta_tk) using slice sampler
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -727,7 +727,7 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
 
   OUTPUT
     R_theta_tk (ndarray, [dy, dy]): Sampled rotation estimate.
-  """
+  '''
   m = getattr(lie, o.lie)
   d_theta_tk = theta_tk[:-1,-1]
 
@@ -826,7 +826,7 @@ def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_
   return R_theta_tk
 
 def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
-  """ Sample z_{tn} | y_{tn}, pi, theta_t, E
+  r''' Sample z_{tn} | y_{tn}, pi, theta_t, E
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -842,7 +842,7 @@ def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
 
   OUTPUT
     z (ndarray, [N_1,]): Associations
-  """
+  '''
   m = getattr(lie, o.lie)
   K = theta_t.shape[0]
   N = y_t.shape[0]
@@ -866,7 +866,7 @@ def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
   return z
 
 def getComponentCounts(o, z_t, pi):
-  """ Count number of observations associated to each component.
+  r''' Count number of observations associated to each component.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -875,7 +875,7 @@ def getComponentCounts(o, z_t, pi):
 
   OUTPUT
     Nk (ndarray, [K+1,]): Observation counts
-  """
+  '''
   K1 = len(pi)
   Nk = np.zeros(K1, dtype=np.int)
   uniq, cnts = np.unique(z_t, return_counts=True)
@@ -885,7 +885,7 @@ def getComponentCounts(o, z_t, pi):
   return Nk
 
 def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
-  """ Remove parts with no associations, renumber existing parts to 0..(K-1).
+  r''' Remove parts with no associations, renumber existing parts to 0..(K-1).
 
   After calling this, pi is no longer valid. Must run inferPi.
 
@@ -906,7 +906,7 @@ def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
     theta (ndarray, [T, K', dxA]): K'-Part Local dynamic.
     E (ndarray, [K', dxA, dxA]): K'-Part Local Extent
     S (ndarray, [K', dxA, dxA]): K'-Part Local Dynamic
-  """
+  '''
   K, T = ( len(pi)-1, len(z) )
   Nk = kwargs.get('Nk', np.sum(
     [ getComponentCounts(o, z[t], pi) for t in range(T) ],
@@ -943,7 +943,7 @@ def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
   else: return z_, theta, E, S
 
 def inferPi(o, Nk, alpha):
-  """ Sample pi
+  r''' Sample pi
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -952,7 +952,7 @@ def inferPi(o, Nk, alpha):
 
   OUTPUT
     pi (ndarray, [K+1]): mixture weights for K+1 parts
-  """
+  '''
   cnts = Nk.astype(np.float)
 
   # todo: check if alpha should be added even if there are unassigned counts.
@@ -970,7 +970,7 @@ def inferPi(o, Nk, alpha):
   return pi
 
 def inferE(o, x, theta, y, z):
-  """ Sample E_k from inverse wishart posterior, for all parts k
+  r''' Sample E_k from inverse wishart posterior, for all parts k
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -981,7 +981,7 @@ def inferE(o, x, theta, y, z):
 
   OUTPUT
     E (ndarray, [K, dy, dy]): K-Part Local Extent (diagonal)
-  """
+  '''
   m = getattr(lie, o.lie)
   T, K = theta.shape[:2]
   E = np.zeros((K, o.dy, o.dy))
@@ -1000,7 +1000,7 @@ def inferE(o, x, theta, y, z):
   return E
 
 def inferSk(o, theta_k):
-  """ Sample S_k from inverse wishart posterior.
+  r''' Sample S_k from inverse wishart posterior.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -1008,7 +1008,7 @@ def inferSk(o, theta_k):
 
   OUTPUT
     S_k (ndarray, [dxA, dxA]): Part k Local Dynamic
-  """
+  '''
   m = getattr(lie, o.lie)
   T = len(theta_k)
   vS, GammaS = o.H_S[1:]
@@ -1029,7 +1029,7 @@ def inferSk(o, theta_k):
   return S_k
 
 def inferQ(o, x):
-  """ Sample Q from inverse wishart posterior.
+  r''' Sample Q from inverse wishart posterior.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -1037,7 +1037,7 @@ def inferQ(o, x):
 
   OUTPUT
     Q (ndarray, [dxA, dxA]): Latent Dynamic
-  """
+  '''
   m = getattr(lie, o.lie)
   vQ, GammaQ = o.H_Q[1:]
   T = len(x)
@@ -1058,7 +1058,7 @@ def inferQ(o, x):
   return Q
 
 def samplePartFromPrior(o, T):
-  """ Sample new part from prior.
+  r''' Sample new part from prior.
     
     Samples the following:
       (theta*_1, E*, S*) ~ ( H_theta, H_E, H_S )
@@ -1073,7 +1073,7 @@ def samplePartFromPrior(o, T):
     theta (ndarray, [T,] + dxGm): Local dynamic.
     E (ndarray, [dxA, dxA]): Local Extent
     S (ndarray, [dxA, dxA]): Local Dynamic
-  """
+  '''
   m = getattr(lie, o.lie)
 
   ## sample extent
@@ -1097,7 +1097,7 @@ def samplePartFromPrior(o, T):
   return theta, E, S
 
 def sampleKPartsFromPrior(o, T, K):
-  """ Sample K new parts from prior.
+  r''' Sample K new parts from prior.
     
     Samples the following:
       (theta*_1, E*, S*) ~ ( H_theta, H_E, H_S )
@@ -1113,7 +1113,7 @@ def sampleKPartsFromPrior(o, T, K):
     theta (ndarray, [T, K, dt]): Local dynamic.
     E (ndarray, [K, dt, dt]): Local Extent
     S (ndarray, [K, dt, dt]): Local Dynamic
-  """
+  '''
   if K > 1:
     parts = [ samplePartFromPrior(o,T) for k in range(K) ]
     theta, E, S = zip(*parts)
@@ -1133,7 +1133,7 @@ def sampleKPartsFromPrior(o, T, K):
   return theta, E, S
 
 def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
-  """ Given x, Monte Carlo estimate log marginal likelihood of each y_{tn}
+  r''' Given x, Monte Carlo estimate log marginal likelihood of each y_{tn}
 
       {theta, E, S} are assumed to be a set of particles sampled from the prior
         p(theta_{1:T}, E, S) = p(E) p(S) \prod_t p(theta_t | theta_{t-1})
@@ -1148,7 +1148,7 @@ def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
 
   OUTPUT
     mL (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): marginal LL of obs
-  """
+  '''
   m = getattr(lie, o.lie)
   T, K = theta.shape[:2]
 
@@ -1176,7 +1176,7 @@ def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
   return mL
 
 def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan):
-  """ Save sample to disk.
+  r''' Save sample to disk.
 
   INPUT
     filename (str): file to load
@@ -1190,13 +1190,13 @@ def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan):
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
     ll (float): joint log-likelihood
-  """
+  '''
   dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
     ll=ll)
   du.save(filename, dct)
 
 def loadSample(filename):
-  """ Load sample from disk.
+  r''' Load sample from disk.
 
   INPUT
     filename (str): file to load
@@ -1212,7 +1212,7 @@ def loadSample(filename):
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
     ll (float): joint log-likelihood
-  """
+  ''' 
   d = du.load(filename)
   o, alpha, z, pi, theta, E, S, x, Q, ll = \
     (d['o'], d['alpha'], d['z'], d['pi'], d['theta'], d['E'], d['S'], d['x'],
@@ -1221,7 +1221,7 @@ def loadSample(filename):
 
 # todo: allow new part sampling
 def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
-  """ Perform full gibbs ssampling pass. Input values will be overwritten.
+  r''' Perform full gibbs ssampling pass. Input values will be overwritten.
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -1245,7 +1245,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
     ll (float): joint log-likelihood
-  """
+  '''
   T, K = ( len(y), len(pi)-1 )
 
   for t in range(T):
@@ -1299,7 +1299,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
 
 # todo: move to utils
 def MakeRd(R, d):
-  """ Make SE(D) element from rotation matrix and translation vector.
+  r''' Make SE(D) element from rotation matrix and translation vector.
 
   INPUT
     R (ndarray, [d, d]): Rotation matrix
@@ -1307,13 +1307,13 @@ def MakeRd(R, d):
 
   OUTPUT
     Rd (ndarray, [d+1, d+1]: Homogeneous Rotation + translation matrix
-  """
+  '''
   bottomRow = np.hstack( [np.zeros_like(d), np.array([1.])] )
   return np.block([ [R, d[:, np.newaxis]], [bottomRow] ])
 
 # todo: move to utils
 def TransformPointsNonHomog(T, y):
-  """ Transform non-honogeneous points y with transformation T.
+  r''' Transform non-honogeneous points y with transformation T.
 
   INPUT
     T (ndarray, [dz, dz]): Homogeneous transformation matrix
@@ -1321,7 +1321,7 @@ def TransformPointsNonHomog(T, y):
 
   OUTPUT
     yp (ndarray, [N, dz-1]): Transformed non-homogeneous points
-  """
+  '''
   R = T[:-1, :-1]
   d = T[:-1, -1][np.newaxis]
   if y.ndim == 1: y = y[np.newaxis]
@@ -1329,7 +1329,7 @@ def TransformPointsNonHomog(T, y):
   return yp
 
 def inferNormalNormal(y, SigmaY, muX, SigmaX, H=None, b=None):
-  """ Conduct a conjugate Normal-Normal update on the below system:
+  r''' Conduct a conjugate Normal-Normal update on the below system:
 
   p(x | y) \propto p(x)               p(y | x)
                  = N(x | muX, SigmaX) N(y | Hx + b, SigmaY)
@@ -1345,7 +1345,7 @@ def inferNormalNormal(y, SigmaY, muX, SigmaX, H=None, b=None):
   OUPUT
     mu (ndarray, [dx,]): Posterior mean
     Sigma (ndarray, [dx,dx]): Posterior covariance
-  """
+  '''
   (dy, dx) = (y.shape[0], muX.shape[0])
   if H is None: H = np.eye(dy,dx)
   if b is None: b = np.zeros(dy)
@@ -1360,7 +1360,7 @@ def inferNormalNormal(y, SigmaY, muX, SigmaX, H=None, b=None):
   return mu, Sigma
 
 def inferNormalConditionalNormal(x2, H, b, u, S, x2_, H_, b_, u_, S_):
-  """ Return mu, Sigma in x1 | x2, H, b, u, S, x2_, H_, b_, u_, S_, where
+  r''' Return mu, Sigma in x1 | x2, H, b, u, S, x2_, H_, b_, u_, S_, where
     
        x1 ~ N(x1 | mu, Sigma)
      propto N( [ H x1 + b; x2 ] | u, S ) * N( [ H_ x1 + b_; x2_ ] | u_, S_ )
@@ -1380,7 +1380,7 @@ def inferNormalConditionalNormal(x2, H, b, u, S, x2_, H_, b_, u_, S_):
   OUTPUT
     mu (ndarray, [d1,])
     Sigma (ndarray, [d1,d1])
-  """
+  '''
   d1, d2 = (len(b), len(x2))
 
   # Get block matrices
@@ -1418,7 +1418,7 @@ def inferNormalConditionalNormal(x2, H, b, u, S, x2_, H_, b_, u_, S_):
   return mu, Sigma
 
 def inferNormalConditional(x2, H, b, u, S):
-  """ Return mu, Sigma in x1 | x2, H, b, u, S, where
+  r''' Return mu, Sigma in x1 | x2, H, b, u, S, where
     
        x1 ~ N(x1 | mu, Sigma)
      propto N( [ H x1 + b; x2 ] | u, S )
@@ -1433,7 +1433,7 @@ def inferNormalConditional(x2, H, b, u, S):
   OUTPUT
     mu (ndarray, [d1,])
     Sigma (ndarray, [d1,d1])
-  """
+  '''
   d1, d2 = (len(b), len(x2))
 
   # Get block matrices
@@ -1463,7 +1463,7 @@ def inferNormalConditional(x2, H, b, u, S):
   return mu, Sigma
 
 def inferNormalInvWishart(df, S, y):
-  """ Conduct a conjugate Normal-Inverse-Wishart update on the below system:
+  r''' Conduct a conjugate Normal-Inverse-Wishart update on the below system:
 
   p(Sigma | df, S, y) \propto p(Sigma | df, S)   p(y | Sigma)
                             = IW(Sigma | df, S)  \prod_i N(y_i | 0, Sigma)
@@ -1476,13 +1476,13 @@ def inferNormalInvWishart(df, S, y):
   OUTPUT
     df_prime (float): posterior degrees of freedom
     S_prime (ndarray, [dy, dy]): posterior scale matrix
-  """
+  ''' 
   df_prime = df + y.shape[0]
   S_prime = S + du.scatter_matrix(y, center=False)
   return (df_prime, S_prime)
 
 def mvnL_logpdf(o, x, mu, Sigma):
-  """ Evaulate log N_L(x | mu, Sigma) = N( log(mu^{-1} x) | 0, Sigma )
+  r''' Evaulate log N_L(x | mu, Sigma) = N( log(mu^{-1} x) | 0, Sigma )
 
   INPUT
     o (argparse.Namespace): Algorithm options
@@ -1492,7 +1492,7 @@ def mvnL_logpdf(o, x, mu, Sigma):
 
   OUTPUT
     ll (float): log N_L(x | mu, Sigma)
-  """
+  ''' 
   m = getattr(lie, o.lie)
   return mvn.logpdf(m.algi(m.logm(m.inv(mu).dot(x))), np.zeros(o.dxA), Sigma,
     allow_singular=True)
