@@ -325,16 +325,19 @@ def draw(o, **kwargs):
     return du.For( pFunc, pArgs, showProgress=False )
   else:
     def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, filename, style):
-      import sys
-      # sys.path.append('code')
-      sys.path.append('/data/rvsn/vp/projects/nonparametric_parts_relative/code')
-      import igpSEN_relative as igp
-      import matplotlib as mpl
-      mpl.use('Agg') # draw without x11
+      # import sys
+      # # sys.path.append('code')
+      # sys.path.append('/data/rvsn/vp/projects/nonparametric_parts_relative/code')
+      # import igpSEN_relative as igp
+      # import matplotlib as mpl
+      # mpl.use('Agg') # draw without x11
 
-      if no_extents: E = None
+      # if no_extents: E = None
 
-      igp.draw_t(o, x=x, theta=theta, y=y, title=title, z=z, zCols=zCols, E=E,
+      # igp.draw_t(o, x=x, theta=theta, y=y, title=title, z=z, zCols=zCols, E=E,
+      #   xlim=xlim, ylim=ylim, filename=filename, style=style)
+
+      draw_t(o, x=x, theta=theta, y=y, title=title, z=z, zCols=zCols, E=E,
         xlim=xlim, ylim=ylim, filename=filename, style=style)
 
     pArgs = [ (o, x[t], theta[t], y[t], title[t], z[t], zCols, E, xlim, ylim,
