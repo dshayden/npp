@@ -1281,6 +1281,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
 
+
   # consolidate then sample pi
   z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
   Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)

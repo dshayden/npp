@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import du, du.stats, lie
 # from . import tmu # todo: add sphere
 from . import SED
+import logging
+logging.getLogger("trimesh").setLevel(logging.ERROR) # stop annoying trimesh logging
 import trimesh as tm
 
 def draw_t_SE3(o, **kwargs):

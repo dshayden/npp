@@ -21,12 +21,9 @@ setup(name='npp',
   license='MIT',
   packages=['npp'],
   install_requires=[
-    'numpy', 'scipy', 'lie', 'matplotlib', 'scikit-learn', 'trimesh'
-  ], # scipy-stats?
+    'numpy', 'scipy', 'lie', 'matplotlib', 'scikit-learn', 'trimesh', 'Shapely'
+  ],
   test_suite='nose.collector',
   tests_require=['nose', 'nose-cover3', 'numdifftools'],
-  # extras = {
-  #   'test': tests_require,
-  # },
   include_package_data=True,
   zip_safe=False)
