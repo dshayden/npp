@@ -180,7 +180,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   with warnings.catch_warnings():
     warnings.filterwarnings("ignore")
     bgmm.fit(yObj[tInit])
-  
+
   # get labels, means, covariances, and stick weights for tInit
   z0 = bgmm.predict(yObj[tInit])
   used = np.unique(z0)
@@ -205,6 +205,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
     _sigD, _R = util.eigh_proper_all(Sigma[i])
     theta0[i] = util.make_rigid_transform(_R[0], mu[i])
     E0[i] = np.diag(_sigD)
+  
 
   # sample S from prior
   S0 = [ iw.rvs(*o.H_S[1:]) for k in range(K) ]
@@ -257,9 +258,15 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
   E = inferE(o, x, theta, y, z)
 
-  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
-  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
-  pi = inferPi(o, Nk, alpha)
+  # have to do this after E, S because they don't exist yet
+  z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
+    E, S)
+  K = len(pi) - 1
+
+
+  # z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
+  # Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  # pi = inferPi(o, Nk, alpha)
 
   return theta, E, S, z, pi
 
@@ -912,7 +919,7 @@ def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
     [ getComponentCounts(o, z[t], pi) for t in range(T) ],
     axis=0
   ))
-  # last entry of Nk is the number of unassigned parts
+  # last entry of Nk is the number of unassigned observations
 
   # nonzero(Nk) gives the indices of nonzero elements
   missing = np.setdiff1d(range(K), np.nonzero(Nk)[0])
@@ -937,10 +944,33 @@ def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
     S = S[alive]
     
   else:
+    alive = np.ones(K, dtype=np.bool)
     z_ = z
 
   if kwargs.get('return_alive', False): return z_, theta, E, S, alive
   else: return z_, theta, E, S
+
+def mergeComponents(o, theta, E, S, theta_star, E_star, S_star):
+  """ Merge components (theta, E, S) and (theta_star, E_star, S_star)
+  
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    theta (ndarray, [T, K, dt]): K-Part Local dynamic.
+    E (ndarray, [K, dt, dt]): K-Part Local Extent
+    S (ndarray, [K, dt, dt]): K-Part Local Dynamic
+    theta_star (ndarray, [T, K_new, dt]): K_new Local dynamic.
+    E_star (ndarray, [K_new, dt, dt]): K_new Local Extent
+    S_star (ndarray, [K_new, dt, dt]): K_new Local Dynamic
+
+  OUTPUT
+    theta_merge (ndarray, [T, K + K_new, dt]): K-Part Local dynamic.
+    E_merge (ndarray, [K + K_new, dt, dt]): K-Part Local Extent
+    S_merge (ndarray, [K + K_new, dt, dt]): K-Part Local Dynamic
+  """
+  theta = np.concatenate((theta, theta_star), axis=1)
+  E = np.concatenate((E, E_star), axis=0)
+  S = np.concatenate((S, S_star), axis=0)
+  return theta, E, S
 
 def inferPi(o, Nk, alpha):
   r''' Sample pi
@@ -998,6 +1028,37 @@ def inferE(o, x, theta, y, z):
       v_E, S_E = inferNormalInvWishart(v_E, S_E, ytk_part)
     E[k] = np.diag(np.diag(iw.rvs(v_E, S_E)))
   return E
+
+def inferEk(o, x, theta, y, z, k):
+  r''' Sample E_k from inverse wishart posterior
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    x (ndarray, [T, dxGf]): Global latent dynamics
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    k (int): index of part to infer
+
+  OUTPUT
+    E (ndarray, [K, dy, dy]): K-Part Local Extent (diagonal)
+  '''
+  m = getattr(lie, o.lie)
+  T = theta.shape[0]
+  E_k = np.zeros((o.dy, o.dy))
+
+  v_E, S_E = o.H_E[1:]
+  S_E = S_E.copy()
+  for t in range(T):
+    ztk = z[t]==k
+    if np.sum(ztk) == 0: continue
+    ytk_world = y[t][ztk]
+    T_part_world = m.inv(x[t].dot(theta[t,k]))
+    ytk_part = TransformPointsNonHomog(T_part_world, ytk_world)
+
+    v_E, S_E = inferNormalInvWishart(v_E, S_E, ytk_part)
+    E_k = np.diag(np.diag(iw.rvs(v_E, S_E)))
+  return E_k
 
 def inferSk(o, theta_k):
   r''' Sample S_k from inverse wishart posterior.
@@ -1219,7 +1280,112 @@ def loadSample(filename):
      d['Q'], d['ll'])
   return o, alpha, z, pi, theta, E, S, x, Q, ll
 
-# todo: allow new part sampling
+def sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
+  r''' Attempt to sample new part, initialize if sampled.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    alpha (float): Concentration parameter, default 1e-3
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+
+  KEYWORD INPUT
+    minNonAssoc (int): Minimum # non-associated points to instantiate new part
+
+  OUTPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+  '''
+  T, K = theta.shape[:2]
+  minNonAssoc = kwargs.get('minNonAssoc', 1)
+  assert minNonAssoc > 0
+
+  # Any observations associated to base measure? If not, return
+  nonAssoc = [ z[t] == -1 for t in range(T) ]
+  nNonAssoc = np.array([ np.sum(nonAssoc[t]) for t in range(T) ])
+  anyNonAssoc = np.sum(nNonAssoc) >= minNonAssoc
+  if not anyNonAssoc: return z, pi, theta, E, S
+  
+  # Randomly select an observation to initialize on
+  tInit = np.random.choice(np.where(nNonAssoc)[0])
+  idx = np.random.choice(np.where(nonAssoc[tInit])[0])
+  z[tInit][idx] = K
+
+  # Make new part k, merge with existing parts. For time tInit, set new part to
+  # identity rotation & translation of point it was initialized on
+  k = K
+  theta, E, S = mergeComponents(o, theta, E, S, *sampleKPartsFromPrior(o, T, 1))
+  theta[tInit, k] = util.make_rigid_transform(np.eye(o.dy), y[tInit][idx])
+
+  # Add new part to pi
+  logPi = np.log(pi)
+  logPi = np.concatenate((pi, np.array([np.log(alpha),])))
+  pi = np.exp(logPi - logsumexp(logPi))
+  assert np.isclose(np.sum(pi), 1.0)
+
+  # propagate new part fwd, back, only change z and new part
+  for t in reversed(range(tInit)):
+    # propagate theta_{t+1} -> theta_t
+    thetaPredict_t = theta[t+1]
+
+    # associate
+    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
+
+    # sample new part rotation, translation
+    y_tk = y[t][zPredict==k]
+    thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+      thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
+    thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+      thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
+    theta[t] = thetaPredict_t
+
+    # re-associate
+    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+
+  for t in range(tInit+1, T):
+    # propagate theta_{t-1} -> theta_t
+    thetaPredict_t = theta[t-1]
+    
+    # associate
+    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
+
+    # sample part rotation, translation
+    y_tk = y[t][zPredict==k]
+    thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+      thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
+    thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+      thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
+    theta[t] = thetaPredict_t
+
+    # re-associate
+    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+
+  # infer S_k, E_k
+  S[k] = inferSk(o, theta[:,k])
+  E[k] = inferEk(o, x, theta, y, z, k)
+
+  # Remove any dead parts
+  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
+  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  pi = inferPi(o, Nk, alpha)
+
+  assert theta.shape[1] == len(pi)-1
+  assert E.shape[0] == len(pi)-1
+  assert S.shape[0] == len(pi)-1
+  assert np.isclose(np.sum(pi), 1.0)
+
+  return z, pi, theta, E, S
+
 def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   r''' Perform full gibbs ssampling pass. Input values will be overwritten.
 
@@ -1236,6 +1402,9 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
     mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
 
+  KEYWORD INPUT
+    newPart (bool): Allow new part sampling
+
   OUTPUT
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
     pi (ndarray, [T, K+1]): Local association priors for each time
@@ -1247,6 +1416,11 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     ll (float): joint log-likelihood
   '''
   T, K = ( len(y), len(pi)-1 )
+
+  # sample new part, propagate
+  if kwargs.get('newPart', True):
+    z, pi, theta, E, S = sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q,
+      mL, **kwargs)
 
   for t in range(T):
     for k in range(K):
@@ -1281,11 +1455,8 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
 
-
-  # consolidate then sample pi
-  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
-  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
-  pi = inferPi(o, Nk, alpha)
+  z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
+    E, S)
   K = len(pi) - 1
 
   # sample E, S, Q
@@ -1297,6 +1468,34 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
 
   return z, pi, theta, E, S, x, Q, ll
+
+def consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S):
+  """ Remove unassociated parts, relabel/sort z, theta, E, S and resample pi
+
+  INPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+    alpha (float): Concentration parameter (default: 0.01)
+    theta (ndarray, [T, K, dxA]): K-Part Local dynamic.
+    E (ndarray, [K, dxA, dxA]): K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+
+  OUTPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K'+1]): stick weights, incl. unused portion
+    theta (ndarray, [T, K', dxA]): K-Part Local dynamic.
+    E (ndarray, [K', dxA, dxA]): K-Part Local Extent
+    S (ndarray, [K', dxA, dxA]): K-Part Local Dynamic
+  """
+  T = len(z)
+  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  z, theta, E, S, alive = consolidateExtantParts(o, z, pi, theta, E, S,
+    return_alive=True)
+  alive = np.concatenate((alive, np.array([True,])))
+  Nk = Nk[alive]
+  pi = inferPi(o, Nk, alpha)
+  K = len(pi) - 1
+  return z, pi, theta, E, S
 
 # todo: move to utils
 def MakeRd(R, d):
