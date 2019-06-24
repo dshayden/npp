@@ -1374,10 +1374,9 @@ def sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   S[k] = inferSk(o, theta[:,k])
   E[k] = inferEk(o, x, theta, y, z, k)
 
-  # Remove any dead parts
-  z, theta, E, S = consolidateExtantParts(o, z, pi, theta, E, S)
-  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
-  pi = inferPi(o, Nk, alpha)
+  # # Remove any dead parts
+  z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
+    E, S)
 
   assert theta.shape[1] == len(pi)-1
   assert E.shape[0] == len(pi)-1
