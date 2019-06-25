@@ -187,9 +187,11 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   Sigma = bgmm.covariances_[used]
   pi = bgmm.weights_[used]
   pi = np.concatenate((pi, [ 1 - np.sum(pi), ] ))
-  if pi[-1] == 0:
-    pi[-1] = alpha
-    pi /= np.sum(pi)
+  if pi[-1] <= 0: pi[-1] = alpha
+
+  # renormalize pi
+  logPi = np.log(pi)
+  pi = np.exp(logPi - logsumexp(logPi))
 
   # relabel z0 from 0..len(used)-1
   zNew = -1*np.ones_like(z0)
