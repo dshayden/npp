@@ -3,6 +3,7 @@ from . import util, sample
 import numpy as np, argparse, lie, warnings
 from scipy.linalg import block_diag
 from sklearn.mixture import BayesianGaussianMixture as dpgmm 
+from sklearn.mixture import GaussianMixture as gmm
 from scipy.stats import multivariate_normal as mvn, invwishart as iw
 from scipy.stats import dirichlet, beta as Be
 from scipy.special import logsumexp
@@ -168,14 +169,12 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   nIter = kwargs.get('nIter', 100)
 
   if not kwargs.get('fixedBreaks', False):
-    # nonparametric
+    # nonparametric init
     bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
       weight_concentration_prior=alpha)
   else:
-    # parametric
-    bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
-      weight_concentration_prior=alpha,
-      weight_concentration_prior_type='dirichlet_distribution')
+    # parametric init
+    bgmm = gmm(maxBreaks, n_init=nInit, max_iter=nIter)
 
   with warnings.catch_warnings():
     warnings.filterwarnings("ignore")
