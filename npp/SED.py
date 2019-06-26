@@ -351,7 +351,7 @@ def logpdf_parameters(o, alpha, pi, E, S, Q):
 
   # pi
   betaPrime = np.zeros_like(pi)
-  betaPrime[0] = pi[0]
+  betaPrime[0] = np.minimum(1.0-1e-16, np.maximum(0.0, pi[0]))
   for k in range(1,len(pi)):
     betaPrime[k] = pi[k] / np.prod( 1 - betaPrime[:k-1] )
     betaPrime[k] = np.minimum(1.0-1e-16, np.maximum(0.0, betaPrime[k]))
@@ -1461,7 +1461,9 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
 
   # sample E, S, Q
   Q = inferQ(o, x)
-  S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
+
+  if K > 0: S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
+  else: S = np.zeros((0, o.dxA, o.dxA))
   E = inferE(o, x, theta, y, z)
 
   # compute log-likelihood

@@ -724,3 +724,46 @@ class test_se2_randomwalk3(unittest.TestCase):
     # o, alpha, z, pi, theta, E, S, x, Q, ll = SED.loadSample(filename)
     #
     # ip.embed()
+
+
+  def testNoParts(s):
+    alpha = 0.1
+    nParticles = 100
+
+    o = s.o
+    SED.initPriorsDataDependent(o, s.y)
+    x = SED.initXDataMeans(o, s.y)
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, s.T, nParticles)
+
+    # force everything to be associated to base measure
+    mL = [ 1000 * np.ones(s.y[t].shape[0]) for t in range(s.T) ]
+
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, s.y, x, alpha, mL)
+    Q = SED.inferQ(o, x)
+
+    nSamples = 1
+    ll = np.zeros(nSamples)
+    for nS in range(nSamples):
+      z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, s.y, alpha, z, pi,
+        theta, E, S, x, Q, mL, newPart=False)
+      assert len(pi) == 1
+      assert theta.shape[1] == 0
+      assert E.shape[0] == 0
+      assert S.shape[0] == 0
+
+    assert np.all(~np.isinf(ll))
+    assert np.all(~np.isnan(ll))
+    
+    # force everything to be associated to new part
+    mL = [ -1000 * np.ones(s.y[t].shape[0]) for t in range(s.T) ]
+
+    for nS in range(nSamples):
+      z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, s.y, alpha, z, pi,
+        theta, E, S, x, Q, mL, newPart=True)
+      assert len(pi) == 2
+      assert theta.shape[1] == 1
+      assert E.shape[0] == 1
+      assert S.shape[0] == 1
+
+    assert np.all(~np.isinf(ll))
+    assert np.all(~np.isnan(ll))
