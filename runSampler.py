@@ -21,8 +21,10 @@ def main(args):
   SED.initPriorsDataDependent(o, y)
   x = SED.initXDataMeans(o, y)
   theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
-  mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
 
+  if nParticles == 0: mL = [ args.mL * np.ones(y[t].shape[0]) for t in range(T) ]
+  else: mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
+  
   # parametric initialization
   theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL,
     fixedBreaks=True, maxBreaks=args.nParts, nInit=5, nIter=500)
@@ -47,7 +49,8 @@ def main(args):
     SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll[nS])
 
     # need to recompute mL each iteration
-    mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
+    if nParticles > 0:
+      mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')
@@ -64,6 +67,8 @@ if __name__ == "__main__":
     help='Sample stride for allowing new parts')
   parser.add_argument('--minNonAssoc', type=int, default=1,
     help='Min number of unassociated observations to allow new part proposals')
+  parser.add_argument('--mL', type=float, default=-7.0,
+    help='Approximate marginal likelihood with a constant')
 
   parser.set_defaults(func=main)
 
