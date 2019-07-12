@@ -57,13 +57,6 @@ def main(args):
     if nParticles > 0:
       mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
 
-    # sample new subset of data
-    if args.maxObs > 0:
-      y = [ yt[np.random.choice(range(len(yt)), min(args.maxObs, len(yt)), replace=False)] for yt in yAll ]
-    else:
-      y = yAll
-
-
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')
   parser.add_argument('dataset', type=str, help='dataset name and path')
