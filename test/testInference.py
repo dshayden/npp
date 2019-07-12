@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from npp import SED, evalSED
+from npp import SED, evalSED, drawSED as draw
 from scipy.stats import multivariate_normal as mvn
 import scipy.optimize as so
 import numdifftools as nd
@@ -767,3 +767,77 @@ class test_se2_randomwalk3(unittest.TestCase):
 
     assert np.all(~np.isinf(ll))
     assert np.all(~np.isnan(ll))
+
+class test_drawing(unittest.TestCase):
+  def setUp(s):
+    s.o = SED.opts(lie='se2')
+
+  def test_se2(s):
+    import matplotlib.pyplot as plt
+
+    dataset = 'se2_waving_hand'
+    alpha = 0.1
+    nParticles = 1
+
+    o = s.o
+    y = du.load(f'../npp-data/{dataset}/data')['y']
+    maxObs = 3000
+    y = [ yt[np.random.choice(range(len(yt)), maxObs, replace=False)] for yt in y ]
+    T = len(y)
+
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
+
+    # force everything to not be associated to base measure
+    # mL = [ 1000 * np.ones(y[t].shape[0]) for t in range(T) ]
+    mL = [ -1000 * np.ones(y[t].shape[0]) for t in range(T) ]
+
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+    Q = SED.inferQ(o, x)
+
+    img = du.For(du.imread, du.GetImgPaths(f'../npp-data/{dataset}/imgs'))
+    # img = None
+    draw.draw(o, y=y, z=z, img=img, x=x, theta=theta, E=E)
+    plt.show()
+
+    # t = 0
+    # img = du.imread(imgs[t])
+    # draw.draw_t_SE2(o, y=y[t], z=z[t], img=img, x=x[t], theta=theta[t], E=E)
+    # plt.show()
+
+class test_eval(unittest.TestCase):
+  def setUp(s):
+    s.o = SED.opts(lie='se2')
+
+  def test_se2(s):
+    import matplotlib.pyplot as plt
+
+    dataset = 'se2_waving_hand'
+    alpha = 0.1
+    nParticles = 1
+
+    o = s.o
+    y = du.load(f'../npp-data/{dataset}/data')['y']
+    gt = f'../npp-data/{dataset}/gtLabels'
+
+    # maxObs = 3000
+    # y = [ yt[np.random.choice(range(len(yt)), maxObs, replace=False)] for yt in y ]
+    T = len(y)
+
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
+
+    # force everything to not be associated to base measure
+    # mL = [ 1000 * np.ones(y[t].shape[0]) for t in range(T) ]
+    mL = [ -1000 * np.ones(y[t].shape[0]) for t in range(T) ]
+
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+    Q = SED.inferQ(o, x)
+
+    img = du.For(du.imread, du.GetImgPaths(f'../npp-data/{dataset}/imgs'))
+    labels = evalSED.MakeLabelImgs(y, z, img)
+
+    tp, fp, fn, ids, tilde_tp, motsa, motsp, s_motsa = evalSED.mots(labels, gt)
+    print(s_motsa)

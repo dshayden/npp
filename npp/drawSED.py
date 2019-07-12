@@ -126,6 +126,7 @@ def draw_t_SE2(o, **kwargs):
     filename: save path if desired, else returns figure reference
     style: string for modifying plot style. Currently ignored.
     reverseY: boolean, default False
+    img (ndarray, [nY, nX, 3]): image to draw on
   """
   assert o.lie == 'se2'
   m = getattr(lie, o.lie)
@@ -135,36 +136,49 @@ def draw_t_SE2(o, **kwargs):
     zCols = du.diffcolors(100, bgCols=[[1,1,1],[0,0,0]])
 
   reverseY = kwargs.get('reverseY', False)
-  # fillStyle = kwargs.get('fillStyle', 'full')
-  import matplotlib
-  marker = matplotlib.markers.MarkerStyle('o', 'full')
 
+  img = kwargs.get('img', None)
+  if img is None:
+    # fillStyle = kwargs.get('fillStyle', 'full')
+    import matplotlib
+    marker = matplotlib.markers.MarkerStyle('o', 'full')
 
-  y = kwargs.get('y', None)
-  if y is not None:
-    z = kwargs.get('z', None)
-    if z is None:
-      plt.scatter( y[:,0], y[:,1], color='k', s=0.1, zorder=0.1 )
-    else:
-      assoc = z>=0
-      plt.scatter(y[assoc,0], y[assoc,1], color=zCols[z[assoc]], s=0.1,
-        zorder=0.1, marker=marker)
-      noAssoc = np.logical_not(assoc)
-      plt.scatter(y[noAssoc,0], y[noAssoc,1], color='gray', alpha=0.5, s=0.1,
-        zorder=0.1, marker=marker)
+    y = kwargs.get('y', None)
+    if y is not None:
+      z = kwargs.get('z', None)
+      if z is None:
+        plt.scatter( y[:,0], y[:,1], color='k', s=0.1, zorder=0.1 )
+      else:
+        assoc = z>=0
+        plt.scatter(y[assoc,0], y[assoc,1], color=zCols[z[assoc]], s=0.1,
+          zorder=0.1, marker=marker)
+        noAssoc = np.logical_not(assoc)
+        plt.scatter(y[noAssoc,0], y[noAssoc,1], color='gray', alpha=0.5, s=0.1,
+          zorder=0.1, marker=marker)
+  else:
+    # assume y are foreground indices
+    y = kwargs.get('y', None)
+    if y is not None:
+      z = kwargs.get('z', None)
+      if z is not None:
+        yInt = y.astype(np.int)
+        if zCols.shape[1] == 3:
+          zColsA = np.concatenate((zCols, 0.5*np.ones((zCols.shape[0], 1))),
+            axis=1)
+        else:
+          zColsA = zCols
 
-      # assoc = z>=0
-      # plt.scatter(y[assoc,0], y[assoc,1], color=zCols[z[assoc]], s=0.1,
-      #   zorder=0.1)
-      # noAssoc = np.logical_not(assoc)
-      # plt.scatter(y[noAssoc,0], y[noAssoc,1], color='gray', alpha=0.5, s=0.1,
-      #   zorder=0.1)
+        for k in np.unique(z[z>=0]):
+          yk = yInt[z==k]
+          img = du.DrawOnImage(img, (yk[:,1], yk[:,0]), zColsA[k])
+        gray = np.array([128, 128, 128, 0.5])
+        yNoAssoc = yInt[z==-1]
+        img = du.DrawOnImage(img, (yNoAssoc[:,1], yNoAssoc[:,0]), gray)
+    plt.imshow(img)
 
   # both x, xTrue are black, need to handle linestyles
   x = kwargs.get('x', None)
-  if x is not None:
-    # m.plot(du.asShape(x, o.dxGm), np.tile([0,0,0], [2,1]), l=0.5)
-    m.plot(x, np.tile([0,0,0], [2,1]), l=0.5)
+  if x is not None: m.plot(x, np.tile([0,0,0], [2,1]), l=10.0)
 
   theta = kwargs.get('theta', None)
   if theta is not None and x is not None:
@@ -173,9 +187,8 @@ def draw_t_SE2(o, **kwargs):
 
     for k in range(K):
       if not isObserved[k]: continue
-      # T_world_part = du.asShape(x, o.dxGm).dot(du.asShape(theta[k], o.dtGm))
       T_world_part = x.dot(theta[k])
-      m.plot(T_world_part, np.tile(zCols[k], [2,1]))
+      m.plot(T_world_part, np.tile(zCols[k], [2,1]), l=10.0)
 
   zero = np.zeros(2)
   E = kwargs.get('E', None)
@@ -183,21 +196,24 @@ def draw_t_SE2(o, **kwargs):
     K = theta.shape[0]
     for k in range(K):
       if not isObserved[k]: continue
-      # T_world_part = du.asShape(x, o.dxGm).dot(du.asShape(theta[k], o.dtGm))
       T_world_part = x.dot(theta[k])
-      # yMu = transformPointsNonHomog(T_world_part.flatten(), zero)
       yMu = SED.TransformPointsNonHomog(T_world_part, zero)
       R = T_world_part[:-1,:-1]
       ySig = R.dot(E[k]).dot(R.T)
       plt.plot( *du.stats.Gauss2DPoints(yMu, ySig, deviations=1.25), c=zCols[k] )
-      # plt.plot( *du.stats.Gauss2DPoints(yMu, ySig, deviations=2), c=zCols[k] )
 
   ax = plt.gca()
   xlim = kwargs.get('xlim', None)
   if xlim is not None: ax.set_xlim(xlim)
+  elif img is not None:
+    xlim = (0, img.shape[1])
+    ax.set_xlim(xlim)
 
   ylim = kwargs.get('ylim', None)
   if ylim is not None: ax.set_ylim(ylim)
+  elif img is not None:
+    ylim = (img.shape[0], 0)
+    ax.set_ylim(ylim)
 
   plt.gca().set_aspect('equal', 'box')
   plt.gca().set_xticks([])
@@ -237,6 +253,7 @@ def draw_t(o, **kwargs):
     title: plot title name
     filename: save path if desired, else returns figure reference
     style: string for modifying plot style. Currently ignored.
+    img (ndarray, [nY, nX, 3]): image to draw on
   """
   if o.lie == 'se2': return draw_t_SE2(o, **kwargs)
   elif o.lie == 'se3': return draw_t_SE3(o, **kwargs) 
@@ -261,6 +278,7 @@ def draw(o, **kwargs):
     ylim: min, max y plot limits. If None, will be figured out.
     style: string for modifying plot style. One of [None, 'mot_wind']
     no_parallel (bool): don't use parfor
+    img (list of ndarray, [nY, nX, 3]): images to draw on
   """
   # time-varying
   y = kwargs.get('y', None)
@@ -272,6 +290,7 @@ def draw(o, **kwargs):
   filename = kwargs.get('filename', None)
   no_parallel = kwargs.get('no_parallel', False)
   no_extents = kwargs.get('no_extents', False)
+  img = kwargs.get('img', None)
 
   if x is None and y is None: return
 
@@ -286,30 +305,33 @@ def draw(o, **kwargs):
 
   xlim = kwargs.get('xlim', None)
   if xlim is None:
-    if y is not None:
-      xmins = [ np.min(y[t][:,0]) for t in range(T) ]
-      xmaxs = [ np.max(y[t][:,0]) for t in range(T) ]
-      xlim = 1.1 * np.array([ np.min(xmins), np.max(xmaxs) ])
+    if y is not None and img is None:
+      xmin = np.min([ np.min(y[t][:,0]) for t in range(T) ])
+      xmax = np.max([ np.max(y[t][:,0]) for t in range(T) ])
+      diff = xmax - xmin
+      xlim = (xmin - diff*0.1, xmax + diff*0.1)
 
   ylim = kwargs.get('ylim', None)
   if ylim is None:
-    if y is not None:
-      ymins = [ np.min(y[t][:,1]) for t in range(T) ]
-      ymaxs = [ np.max(y[t][:,1]) for t in range(T) ]
-      ylim = 1.1 * np.array([ np.min(ymins), np.max(ymaxs) ])
+    if y is not None and img is None:
+      ymin = np.min([ np.min(y[t][:,1]) for t in range(T) ])
+      ymax = np.max([ np.max(y[t][:,1]) for t in range(T) ])
+      diff = ymax - ymin
+      ylim = (ymax + diff*0.1, ymin - diff*0.1)
 
   # either save all or use ViewPlots
   if x is None: x = [ None for t in range(T) ]
   if theta is None: theta = [ None for t in range(T) ]
   if y is None: y = [ None for t in range(T) ]
   if z is None: z = [ None for t in range(T) ]
+  if img is None: img = [ None for t in range(T) ]
 
-  if title is None: title = [ None for t in range(T) ]
+  if title is None: title = [ f'{t:05}' for t in range(T) ]
 
   if filename is None and o.lie == 'se2':
     def _draw_t(t):
       draw_t(o, x=x[t], theta=theta[t], y=y[t], title=title[t], z=z[t],
-        zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
+        img=img[t], zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
     du.ViewPlots(range(T), _draw_t)
   elif filename is None and o.lie == 'se3':
     def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, style):
@@ -326,7 +348,7 @@ def draw(o, **kwargs):
     # return du.ParforD( pFunc, pArgs )
     return du.For( pFunc, pArgs, showProgress=False )
   else:
-    def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, filename, style):
+    def pFunc(o, x, theta, y, title, z, img, zCols, E, xlim, ylim, filename, style):
       # import sys
       # # sys.path.append('code')
       # sys.path.append('/data/rvsn/vp/projects/nonparametric_parts_relative/code')
@@ -339,11 +361,11 @@ def draw(o, **kwargs):
       # igp.draw_t(o, x=x, theta=theta, y=y, title=title, z=z, zCols=zCols, E=E,
       #   xlim=xlim, ylim=ylim, filename=filename, style=style)
 
-      draw_t(o, x=x, theta=theta, y=y, title=title, z=z, zCols=zCols, E=E,
+      draw_t(o, x=x, theta=theta, y=y, title=title, z=z, img=img, zCols=zCols, E=E,
         xlim=xlim, ylim=ylim, filename=filename, style=style)
 
-    pArgs = [ (o, x[t], theta[t], y[t], title[t], z[t], zCols, E, xlim, ylim,
-      filename[t], style) for t in range(T) ]
+    pArgs = [ (o, x[t], theta[t], y[t], title[t], z[t], img[t], zCols, E, xlim,
+      ylim, filename[t], style) for t in range(T) ]
     if __name__ == '__main__' and not no_parallel:
       du.ParforD( pFunc, pArgs )
     else:
