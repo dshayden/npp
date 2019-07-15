@@ -102,7 +102,11 @@ def initPriorsDataDependent(o, y, **kwargs):
   rotX = kwargs.get('rotX', 180.0) # 1SD of x0 rotation
   xRotVar_radian = d2r(rotX)**2
   xTransVar = np.var(y[0], axis=0)
-  SigmaX = np.diag( np.hstack([ xTransVar, xRotVar_radian]) )
+  if o.lie == 'se2':
+    SigmaX = np.diag( np.hstack([ xTransVar, xRotVar_radian]) )
+  else:
+    SigmaX = np.diag( np.hstack([ xTransVar, xRotVar_radian*np.ones(3)]) )
+  # SigmaX = np.diag( np.hstack([ xTransVar, xRotVar_radian]) )
   o.H_x = ('mvnL', muX, SigmaX)
 
   # theta prior
@@ -110,7 +114,12 @@ def initPriorsDataDependent(o, y, **kwargs):
   rotTheta = kwargs.get('rotTheta', 180.0) # 1SD of theta0 rotation
   thetaRotVar_radian = d2r(rotTheta)**2
   thetaTransVar = np.var(y[0], axis=0)
-  SigmaTheta = np.diag( np.hstack([ thetaTransVar, thetaRotVar_radian]) )
+
+  if o.lie == 'se2':
+    SigmaTheta = np.diag( np.hstack([ thetaTransVar, thetaRotVar_radian]) )
+  else:
+    SigmaTheta = np.diag( np.hstack([ thetaTransVar, thetaRotVar_radian*np.ones(3)]) )
+  # SigmaTheta = np.diag( np.hstack([ thetaTransVar, thetaRotVar_radian]) )
   o.H_theta = ('mvnL', muTheta, SigmaTheta)
 
 def initXDataMeans(o, y):

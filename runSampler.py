@@ -20,13 +20,13 @@ def main(args):
   nSamples = args.nSamples
   alpha = args.alpha 
   nParticles = args.nParticles
-  o = SED.opts()
+  if args.se3: o = SED.opts(lie='se3')
+  else: o = SED.opts(lie='se2')
 
   du.tic()
   SED.initPriorsDataDependent(o, y)
   x = SED.initXDataMeans(o, y)
   theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
-
   if nParticles == 0: mL = [ args.mL * np.ones(y[t].shape[0]) for t in range(T) ]
   else: mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
   
@@ -76,6 +76,8 @@ if __name__ == "__main__":
     help='Approximate marginal likelihood with a constant')
   parser.add_argument('--maxObs', type=int, default=0,
     help='Max number observations to view, 0 for all')
+  parser.add_argument('--se3', action='store_true',
+    help='Use se3 dynamics')
 
   parser.set_defaults(func=main)
 
