@@ -1430,6 +1430,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   if kwargs.get('newPart', True):
     z, pi, theta, E, S = sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q,
       mL, **kwargs)
+    K = len(pi) - 1
 
   for t in range(T):
     for k in range(K):

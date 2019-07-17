@@ -23,32 +23,56 @@ def main(args):
   if args.se3: o = SED.opts(lie='se3')
   else: o = SED.opts(lie='se2')
 
-  du.tic()
-  SED.initPriorsDataDependent(o, y)
-  x = SED.initXDataMeans(o, y)
-  theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
-  if nParticles == 0: mL = [ args.mL * np.ones(y[t].shape[0]) for t in range(T) ]
-  else: mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
-  
-  # parametric initialization
-  theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL,
-    fixedBreaks=False, maxBreaks=args.nParts, nInit=5, nIter=500)
-  Q = SED.inferQ(o, x)
-  print(f'Init took {du.toc():.2f} seconds')
+  if not args.resume:
+    du.tic()
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
+    if nParticles == 0: mL = [ args.mL * np.ones(y[t].shape[0]) for t in range(T) ]
+    else: mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
+    
+    # parametric initialization
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL,
+      fixedBreaks=False, maxBreaks=args.nParts, nInit=5, nIter=500)
+    Q = SED.inferQ(o, x)
+    print(f'Init took {du.toc():.2f} seconds')
 
-  try: os.makedirs(f'results/{dataset}/{args.runId}')
-  except: None
+    try: os.makedirs(f'results/{dataset}/{args.runId}')
+    except: None
+
+    sampleRng = range(nSamples)
+
+  else:
+    print('Resuming...')
+    du.tic()
+    sampleList = du.GetFilePaths(f'results/{dataset}/{args.runId}', 'gz')
+    nPreviousSamples = len(sampleList)
+    assert nPreviousSamples > 0
+    o, alpha, z, pi, theta, E, S, x, Q, ll = SED.loadSample(sampleList[-1])
+    theta_, E_, S_ = SED.sampleKPartsFromPrior(o, T, nParticles)
+    if nParticles == 0: mL = [ args.mL * np.ones(y[t].shape[0]) for t in range(T) ]
+    else: mL = SED.logMarginalPartLikelihoodMonteCarlo(o, y, x, theta_, E_, S_)
+
+    if args.maxObs > 0:
+      # must resample assignments since sub-sampled observation set has changed.
+      for t in range(T): z[t] = SED.inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+      z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, alpha,
+        theta, E, S)
+
+    sampleRng = range(nPreviousSamples, nSamples)
+    print(f'Resume took {du.toc():.2f} seconds')
 
   noNewPartBefore = args.noNewPartBefore
   newPartStep = args.newPartStep
   minNonAssoc = args.minNonAssoc
 
   ll = np.zeros(nSamples)
-  for nS in range(nSamples):
+  for nS in sampleRng:
     newPart = True if nS >= noNewPartBefore and nS % newPartStep == 0 else False
 
     z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, y, alpha, z, pi,
       theta, E, S, x, Q, mL, newPart=newPart, minNonAssoc=minNonAssoc)
+
     print(f'Run {args.runId}, Sample {nS:05}, #Parts: {theta.shape[1]:02}, ll: {ll[nS]:.2f}')
     filename = f'results/{dataset}/{args.runId}/sample-{nS:05}'
     SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll[nS])
@@ -78,6 +102,8 @@ if __name__ == "__main__":
     help='Max number observations to view, 0 for all')
   parser.add_argument('--se3', action='store_true',
     help='Use se3 dynamics')
+  parser.add_argument('--resume', action='store_true',
+    help='Resume from previous sampling')
 
   parser.set_defaults(func=main)
 
