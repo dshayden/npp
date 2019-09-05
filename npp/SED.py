@@ -915,6 +915,7 @@ def getComponentCounts(o, z_t, pi):
     Nk[uni] = c
   return Nk
 
+# not being called anymore, todo: delete and refactor tests
 def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
   r''' Remove parts with no associations, renumber existing parts to 0..(K-1).
 
@@ -1514,14 +1515,70 @@ def consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S):
     S (ndarray, [K', dxA, dxA]): K-Part Local Dynamic
   """
   T = len(z)
-  Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
-  z, theta, E, S, alive = consolidateExtantParts(o, z, pi, theta, E, S,
-    return_alive=True)
-  alive = np.concatenate((alive, np.array([True,])))
-  Nk = Nk[alive]
-  pi = inferPi(o, Nk, alpha)
   K = len(pi) - 1
-  return z, pi, theta, E, S
+
+  Nk = []
+  idx = []
+  for k in range(K):
+    s = 0
+    for t in range(T): s += np.sum(z[t]==k)
+    if s > 0:
+      Nk.append(s)
+      idx.append(k)
+
+  # last entry of Nk is the number of unassigned observations
+  s = 0
+  for t in range(T): s += np.sum(z[t]==-1)
+  if s > 0: Nk.append(s)
+  else: Nk.append(alpha)
+  idx.append(K)
+
+  # resample pi
+  piInputUnnormalized = pi[idx]
+  logPiInputUnnormalized = np.log(piInputUnnormalized)
+  piInput = np.exp(logPiInputUnnormalized - logsumexp(logPiInputUnnormalized))
+  assert len(piInput) == len(Nk)
+  assert np.isclose(np.sum(piInput), 1.0)
+  assert np.all(piInput>0)
+  pi = dirichlet.rvs(Nk)[0]
+
+  # remove components that don't have associatios and relabel z
+  missing = np.setdiff1d(range(K), idx[:-1])
+  uniq = np.setdiff1d(range(K), missing)
+  if len(missing) > 0:
+    # establish relabeling
+    mapping = np.arange(K)
+    for m in missing: mapping[m] = -1
+    alive = mapping >= 0
+    mapping[alive] = np.arange(len(uniq))
+
+    # relabel z
+    z_ = [ -1*np.ones_like(z[t]) for t in range(T) ]
+    for k in uniq:
+      for t in range(T):
+        z_[t][z[t]==k] = mapping[k]
+
+    # reorder parts
+    theta = theta[:, alive]
+    E = E[alive]
+    S = S[alive]
+    
+  else:
+    alive = np.ones(K, dtype=np.bool)
+    z_ = z
+
+  return z_, pi, theta, E, S
+
+
+  # T = len(z)
+  # Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
+  # z, theta, E, S, alive = consolidateExtantParts(o, z, pi, theta, E, S,
+  #   return_alive=True)
+  # alive = np.concatenate((alive, np.array([True,])))
+  # Nk = Nk[alive]
+  # pi = inferPi(o, Nk, alpha)
+  # K = len(pi) - 1
+  # return z, pi, theta, E, S
 
 # todo: move to utils
 def MakeRd(R, d):

@@ -680,6 +680,8 @@ class test_se2_randomwalk3(unittest.TestCase):
     s.data = data
 
   def testInitRJMCMC(s):
+    # run with 
+    # nosetests -s --nologcapture test/testInference.py:test_se2_randomwalk3.testInitRJMCMC
     alpha = 0.1
     mL_const = -7.0
 
@@ -697,11 +699,20 @@ class test_se2_randomwalk3(unittest.TestCase):
     llTrue = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue,
       s.STrue, s.QTrue, alpha, s.piTrue, mL)
     llInit = SED.logJoint(o, s.y, z, x, theta, E, S, Q, alpha, pi, mL)
-    print(llTrue)
-    print(llInit)
+    print(f'llTrue: {llTrue:.2f}, llInit: {llInit:.2f}')
 
-    
-    
+    z, pi, theta, E, S, x, Q, ll = SED.sampleStepFC(o, s.y, alpha, z, pi,
+      theta, E, S, x, Q, mL, newPart=False)
+
+    # # artifically add a part
+    theta = np.concatenate((theta, np.zeros((s.T,1,) + o.dxGm)), axis=1)
+    E = np.concatenate((E, np.zeros((o.dy, o.dy))[np.newaxis]), axis=0)
+    S = np.concatenate((S, np.zeros((1, o.dxA, o.dxA))), axis=0)
+    pi = np.array([0.5, 0.5])
+    z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S)
+    assert theta.shape[1] == 0 and E.shape[0] == 0 and S.shape[0] == 0
+
+
 
     # import matplotlib.pyplot as plt
     # from npp import drawSED
@@ -715,7 +726,7 @@ class test_se2_randomwalk3(unittest.TestCase):
     # ll = np.zeros(nSamples)
     # for nS in range(nSamples):
     #   z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, s.y, alpha, z, pi,
-    #     theta, E, S, x, Q, mL)
+    #     theta, E, S, x, Q, mL, newPart=False)
     #   Nk = np.sum([SED.getComponentCounts(o, z[t], pi)
     #     for t in range(s.T)], axis=0)
     #   print(nS, Nk[-1])
