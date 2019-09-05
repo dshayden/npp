@@ -114,7 +114,6 @@ class test_se2_randomwalk10(unittest.TestCase):
     s.y = data['y']
 
     # Ground-truth
-    ## this is probably wrong, probably need shape[1]
     s.KTrue = data['theta'].shape[1]
     s.xTrue = du.asShape(data['x'], (s.T,) + s.o.dxGm)
     s.thetaTrue = data['theta']
@@ -670,7 +669,6 @@ class test_se2_randomwalk3(unittest.TestCase):
     s.y = data['y']
 
     # Ground-truth
-    ## this is probably wrong, probably need shape[1]
     s.KTrue = data['theta'].shape[1]
     s.xTrue = du.asShape(data['x'], (s.T,) + s.o.dxGm)
     s.thetaTrue = data['theta']
@@ -680,6 +678,67 @@ class test_se2_randomwalk3(unittest.TestCase):
     s.zTrue = data['z']
     s.piTrue = data['pi']
     s.data = data
+
+  def testInitRJMCMC(s):
+    alpha = 0.1
+    mL_const = -7.0
+
+    o = s.o
+    SED.initPriorsDataDependent(o, s.y)
+    x = SED.initXDataMeans(o, s.y)
+    theta = np.zeros((s.T, 0,) + o.dxGm)
+    E = np.zeros((0, o.dy, o.dy))
+    S = np.zeros((0, o.dxA, o.dxA))
+    Q = SED.inferQ(o, x)
+    mL = [ mL_const * np.ones(s.y[t].shape[0]) for t in range(s.T) ]
+    pi = np.array([1.0,])
+    z = [ -1 * np.ones(s.y[t].shape[0], dtype=np.int) for t in range(s.T) ]
+
+    llTrue = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue,
+      s.STrue, s.QTrue, alpha, s.piTrue, mL)
+    llInit = SED.logJoint(o, s.y, z, x, theta, E, S, Q, alpha, pi, mL)
+    print(llTrue)
+    print(llInit)
+
+    
+    
+
+    # import matplotlib.pyplot as plt
+    # from npp import drawSED
+    # drawSED.draw(o, y=s.y, x=x, z=z)
+    # plt.show()
+     
+
+
+    # # nSamples = 50
+    # nSamples = 5
+    # ll = np.zeros(nSamples)
+    # for nS in range(nSamples):
+    #   z, pi, theta, E, S, x, Q, ll[nS] = SED.sampleStepFC(o, s.y, alpha, z, pi,
+    #     theta, E, S, x, Q, mL)
+    #   Nk = np.sum([SED.getComponentCounts(o, z[t], pi)
+    #     for t in range(s.T)], axis=0)
+    #   print(nS, Nk[-1])
+    #
+    #
+    # import matplotlib.pyplot as plt
+    # from npp import drawSED
+    # plt.plot(ll, label='Samples', c='b');
+    # piTrue = np.concatenate((s.piTrue, np.array([alpha,])))
+    # llTrue = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue,
+    #   s.STrue, s.QTrue, alpha, s.piTrue, mL)
+    # plt.axhline(llTrue, label='True', c='g')
+    # plt.legend()
+    # plt.show()
+    # drawSED.draw(o, y=s.y, x=x, z=z, theta=theta, E=E)
+    # plt.show()
+
+    ## quick test of save and load
+    # filename = 'tmp-123'
+    # SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan)
+    # o, alpha, z, pi, theta, E, S, x, Q, ll = SED.loadSample(filename)
+    #
+    # ip.embed()
 
   def testInit(s):
     alpha = 0.1

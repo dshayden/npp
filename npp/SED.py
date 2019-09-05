@@ -6,7 +6,7 @@ from sklearn.mixture import BayesianGaussianMixture as dpgmm
 from sklearn.mixture import GaussianMixture as gmm
 from scipy.stats import multivariate_normal as mvn, invwishart as iw
 from scipy.stats import dirichlet, beta as Be
-from scipy.special import logsumexp
+from scipy.special import logsumexp, gammaln
 import du, du.stats # move useful functions from these to utils (catrnd)
 import functools
 
@@ -316,38 +316,60 @@ def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
 
   return ll
 
-def logpdf_assoc_t(o, z_t, pi):
-  r''' Return log-likelihood of z_t | pi.
+def logpdf_assoc(o, z, pi, alpha):
+  r''' Return log-likelihood of p(pi, z | alpha) = p(pi | z, alpha) p(z | alpha)
 
   INPUT
     o (argparse.Namespace): Algorithm options
-    z_t (ndarray, [N_t,]): Associations at time t
-    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [K+1,]): stick weights, incl. unused portion
+    alpha (float): Concentration parameter
 
   OUTPUT
     ll (float): log-likelihood
   '''
-  logPi = np.log(pi)
-  ll = np.sum( logPi[z_t] )
+  # get counts
+  ll = 0.0
+  K = len(pi)-1
+  T = len(z)
 
-  # ztNonNeg = z[t][z[t]>=0]
+  # pi | z, alpha
+  Nk = []
+  idx = []
+  for k in range(K):
+    s = 0
+    for t in range(T): s += np.sum(z[t]==k)
+    if s > 0:
+      Nk.append(s)
+      idx.append(k)
+  s = 0
+  for t in range(T): s += np.sum(z[t]==-1)
+  if s > 0: Nk.append(s)
+  else: Nk.append(alpha)
+  idx.append(K)
 
-  # ll = 0.0
+  piInputUnnormalized = pi[idx]
+  logPiInputUnnormalized = np.log(piInputUnnormalized)
+  piInput = np.exp(logPiInputUnnormalized - logsumexp(logPiInputUnnormalized))
 
-  # ll += np.sum( logPi[ztNonNeg] )
-  # ll += mL * np.sum(z[t]==-1)
+  assert len(piInput) == len(Nk)
+  assert np.isclose(np.sum(piInput), 1.0)
+  assert np.all(piInput>0)
+  ll += dirichlet.logpdf(piInput, Nk)
+
+  # z | alpha
+  ll += K * np.log(alpha)
+  ll += gammaln(alpha)
+  ll += np.sum( gammaln(Nk) )
+  ll -= gammaln( np.sum(Nk) + alpha )
 
   return ll
 
-  None
-
-def logpdf_parameters(o, alpha, pi, E, S, Q):
+def logpdf_parameters(o, E, S, Q):
   r''' Return log-likelihood, E, S, Q, pi | alpha, H_*
 
   INPUT
     o (argparse.Namespace): Algorithm options
-    alpha (float): Concentration parameter (default: 0.01)
-    pi (ndarray, [T, K+1]): stick weights, incl. unused portion
     E (ndarray, [K, dxA, dxA]): K-Part Local Extent
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     Q (ndarray, [dxA, dxA]): Latent Dynamic
@@ -355,16 +377,8 @@ def logpdf_parameters(o, alpha, pi, E, S, Q):
   OUTPUT
     ll (float): log-likelihood for parameters
   '''
-  K = len(pi)-1
+  K = E.shape[0]
   ll = 0.0
-
-  # pi
-  betaPrime = np.zeros_like(pi)
-  betaPrime[0] = np.minimum(1.0-1e-16, np.maximum(0.0, pi[0]))
-  for k in range(1,len(pi)):
-    betaPrime[k] = pi[k] / np.prod( 1 - betaPrime[:k-1] )
-    betaPrime[k] = np.minimum(1.0-1e-16, np.maximum(0.0, betaPrime[k]))
-  ll += np.sum(Be.logpdf(betaPrime, 1.0, alpha))
 
   # E, S, Q
   ll += np.sum( [iw.logpdf(E[k], *o.H_E[1:]) for k in range(K)] )
@@ -426,22 +440,22 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
   T,K = theta.shape[:2]
   if mL is None: mL = [ None for t in range(T) ]
 
-  # E, S, Q, pi
-  ll += logpdf_parameters(o, alpha, pi, E, S, Q)
+  # E, S, Q | H_E, H_S, H_Q
+  ll += logpdf_parameters(o, E, S, Q)
+
+  # z, pi | alpha
+  ll += logpdf_assoc(o, z, pi, alpha)
 
   # time-dependent
-  ## y
+  ## y | z, theta, x, E
   ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
     for t in range(T) ])
   
-  ## z
-  ll += np.sum( [logpdf_assoc_t(o, z[t], pi) for t in range(T)] )
-
-  ## x
+  ## x | Q, H_x
   ll += logpdf_x_t(o, x[1], o.H_x[1], o.H_x[2])
   ll += np.sum( [logpdf_x_t(o, x[t], x[t-1], Q) for t in range(1,T)] )
 
-  ## theta
+  ## theta | S, H_theta
   for k in range(K):
     ll += logpdf_theta_tk(o, theta[0,k], o.H_theta[1], o.H_theta[2])
     ll += np.sum( [logpdf_theta_tk(o, theta[t,k], theta[t-1,k], S[k])
