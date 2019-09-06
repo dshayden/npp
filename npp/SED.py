@@ -1428,6 +1428,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
 
   KEYWORD INPUT
     newPart (bool): Allow new part sampling
+    dontSampleX (bool): Don't allow x, Q resampling
 
   OUTPUT
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
@@ -1440,6 +1441,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     ll (float): joint log-likelihood
   '''
   T, K = ( len(y), len(pi)-1 )
+  dontSampleX = kwargs.get('dontSampleX', False)
 
   # sample new part, propagate
   if kwargs.get('newPart', True):
@@ -1464,18 +1466,19 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
 
       theta[t,k] = thetaPredict
 
-    # sample x_t
-    if t==0: xPrev, QPrev = ( o.H_x[1], o.H_x[2] )
-    else: xPrev, QPrev = ( x[t-1], Q )
-    if t==T-1: xNext, QNext = ( None, None )
-    else: xNext, QNext = ( x[t+1], Q )
-    xPredict = x[t]
+    if not dontSampleX:
+      # sample x_t
+      if t==0: xPrev, QPrev = ( o.H_x[1], o.H_x[2] )
+      else: xPrev, QPrev = ( x[t-1], Q )
+      if t==T-1: xNext, QNext = ( None, None )
+      else: xNext, QNext = ( x[t+1], Q )
+      xPredict = x[t]
 
-    xPredict[:-1,:-1] = sampleRotationX(o, y[t], z[t], xPredict, theta[t], E,
-      QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
-    xPredict[:-1,-1] = sampleTranslationX(o, y[t], z[t], xPredict, theta[t], E,
-      QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
-    x[t] = xPredict
+      xPredict[:-1,:-1] = sampleRotationX(o, y[t], z[t], xPredict, theta[t], E,
+        QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
+      xPredict[:-1,-1] = sampleTranslationX(o, y[t], z[t], xPredict, theta[t], E,
+        QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
+      x[t] = xPredict
 
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
@@ -1485,7 +1488,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   K = len(pi) - 1
 
   # sample E, S, Q
-  Q = inferQ(o, x)
+  if not dontSampleX: Q = inferQ(o, x)
 
   if K > 0: S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
   else: S = np.zeros((0, o.dxA, o.dxA))
@@ -1569,16 +1572,150 @@ def consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S):
 
   return z_, pi, theta, E, S
 
+def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
+  # p(new)   g(old | new)   
+  # ------ * ------------ * Jacobian
+  # p(old)   g(new | old)
+  m = getattr(lie, o.lie)
+  T = len(y)
+  K_new = len(pi)
 
-  # T = len(z)
-  # Nk = np.sum([getComponentCounts(o, z[t], pi) for t in range(T)], axis=0)
-  # z, theta, E, S, alive = consolidateExtantParts(o, z, pi, theta, E, S,
-  #   return_alive=True)
-  # alive = np.concatenate((alive, np.array([True,])))
-  # Nk = Nk[alive]
-  # pi = inferPi(o, Nk, alpha)
-  # K = len(pi) - 1
-  # return z, pi, theta, E, S
+  # log g(old | new)
+  g_old_new = np.log(pDeath) + np.log(1 / K_new)
+
+  # log g(new | old)
+  ## sample all new random variables for proposal
+  beta = Be.rvs(1,1)
+  E_k = np.diag(np.diag(iw.rvs(*o.H_E[1:])))
+  S_k = iw.rvs(*o.H_S[1:])
+  theta1_rv_param = (m.algi(m.logm(o.H_theta[1])), o.H_theta[2])
+  theta1_rv = mvn.rvs(*theta1_rv_param)
+  theta1_ = m.expm(m.alg(theta1_rv))
+
+  ## proposal logpdf 
+  g_new_old = np.log(pBirth)
+  g_new_old += Be.logpdf(beta, 1, 1)
+  g_new_old += iw.logpdf(E_k, *o.H_E[1:])
+  g_new_old += iw.logpdf(S_k, *o.H_S[1:])
+  g_new_old += mvn.logpdf(theta1_rv, *theta1_rv_param)
+
+  # log Jacobian
+  logJ = np.log(pi[-1])
+
+  # deterministic transformation
+  pi_k = pi[-1] * beta
+  pi_inf = pi[-1] * (1 - beta)
+  pi_ = np.concatenate(( pi[:-1], np.array([pi_k, pi_inf]) ))
+  E_ = np.concatenate((E, E_k[np.newaxis]), axis=0)
+  S_ = np.concatenate((S, S_k[np.newaxis]), axis=0)
+  theta_ = np.concatenate((
+      theta,
+      np.tile( theta1_[np.newaxis, np.newaxis], [T, 1, 1, 1] )
+    ), axis=1)
+
+  # resample labels z[t] as Gibbs-within-Metropolis step
+  # Note: this doesn't figure into ratio because all involved terms cancel
+  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], mL[t]) for t in range(T) ]
+
+  # p(new)
+  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, mL)
+
+  # p(old)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+
+  logRatio = p_new + g_old_new + logJ - p_old - g_new_old
+  # print(f'BIRTH logRatio: {logRatio:.2f}')
+  # print(f'  log p(new): {p_new:.2f}, log p(old): {p_old:.2f}')
+  # print(f'  log g(old | new): {g_old_new:.2f}, log g(new | old): {g_new_old:.2f}')
+  # print(f'  log Jacobian: {logJ:.2f}')
+  # print(f'  nNewAssoc: {np.sum(z_ == len(pi_)-2)}')
+
+  # accept / reject
+  if logRatio >= 0 or np.random.rand() < np.exp(logRatio):
+    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, mL
+  else:
+    return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
+  T = len(y)
+  K_old = len(pi) - 1
+
+  # sample random state
+  C = np.random.randint(K_old) # component to kill
+
+  # deterministic transformation
+  newIdx = np.setdiff1d(np.arange(K_old+1), C)
+  theta_, E_, S_ = ( theta[:,newIdx[:-1]], E[newIdx[:-1]], S[newIdx[:-1]] )
+  pi_ = pi[newIdx]
+  pi_[-1] += pi[C]  ## add deleted weight to unassigned
+
+  # resample labels z[t] as Gibbs-within-Metropolis step
+  # Note: this doesn't figure into ratio because all involved terms cancel
+  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], mL[t]) for t in range(T) ]
+
+  # construct ratio
+  ## g(old | new) : reverse birth move
+  beta_ = pi[C] / pi_[-1]
+  g_old_new = np.log(pBirth)
+  g_old_new += Be.logpdf(beta_, 1, 1)
+  g_old_new += iw.logpdf(E[C], *o.H_E[1:])
+  g_old_new += iw.logpdf(S[C], *o.H_S[1:])
+  g_old_new += mvnL_logpdf(o, theta[0,C], *o.H_theta[1:])
+
+  ## g(new | old) : death move
+  g_new_old = np.log(pDeath) + np.log(1 / K_old)
+
+  logJ = -np.log(pi[-1])
+
+  # p(new)
+  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, mL)
+
+  # p(old)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+
+  logRatio = p_new + g_old_new + logJ - p_old - g_new_old
+  # print(f'DEATH logRatio: {logRatio:.2f}')
+  # print(f'  log p(new): {p_new:.2f}, log p(old): {p_old:.2f}')
+  # print(f'  log g(old | new): {g_old_new:.2f}, log g(new | old): {g_new_old:.2f}')
+  # print(f'  log Jacobian: {logJ:.2f}')
+  # print(f'  nNewAssoc: {np.sum(z_ == len(pi_)-2)}')
+
+  # accept / reject
+  if logRatio >= 0 or np.random.rand() < np.exp(logRatio):
+    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, mL
+  else:
+    return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, **kwargs):
+  # RJMCMC birth/death 
+  K = len(pi) - 1
+  pGibbs = 1 - (pBirth + pDeath)
+
+  if K == 0:
+    rjmcmc_probs = np.array([pBirth, pGibbs])
+    rjmcmc_probs /= np.sum(rjmcmc_probs)
+    moves = ['birth', 'gibbs']
+  else:
+    rjmcmc_probs = np.array([pBirth, pDeath, pGibbs])
+    moves = ['birth', 'death', 'gibbs']
+  assert np.isclose(np.sum(rjmcmc_probs), 1.0)
+
+  move = du.stats.catrnd(rjmcmc_probs[np.newaxis])[0]
+  if moves[move] == 'birth':
+    accept, z, x, theta, E, S, Q, alpha, pi, mL = try_birth(o, y,
+      z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath)
+  elif moves[move] == 'death': # death
+    accept, z, x, theta, E, S, Q, alpha, pi, mL = try_death(o, y,
+      z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth)
+  elif moves[move] == 'gibbs':
+    accept = True
+    dontSampleX = kwargs.get('dontSampleX', False)
+    z, pi, theta, E, S, x, Q, ll = sampleStepFC(o, y, alpha, z, pi, theta,
+      E, S, x, Q, mL, newPart=False, dontSampleX=dontSampleX)
+  
+  return z, pi, theta, E, S, x, Q, mL, moves[move], accept
+
+
 
 # todo: move to utils
 def MakeRd(R, d):

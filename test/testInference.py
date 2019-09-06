@@ -6,6 +6,7 @@ import scipy.optimize as so
 import numdifftools as nd
 import lie
 import du
+import matplotlib.pyplot as plt
 import IPython as ip
 np.set_printoptions(suppress=True, precision=4)
 
@@ -679,11 +680,143 @@ class test_se2_randomwalk3(unittest.TestCase):
     s.piTrue = data['pi']
     s.data = data
 
+  def testInitRJMCMC_spider(s):
+    alpha = 0.1
+    mL_const = -14.0
+
+    o = SED.opts(lie='se2')
+    y = du.load('../npp-data/se2_spider/data')['y']
+    T = len(y)
+    maxObs = 3000
+    if maxObs > 0:
+      y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
+
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
+    Q = SED.inferQ(o, x)
+
+    mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+
+    # theta = np.zeros((T, 0,) + o.dxGm)
+    # E = np.zeros((0, o.dy, o.dy))
+    # S = np.zeros((0, o.dxA, o.dxA))
+    # Q = SED.inferQ(o, x)
+    # mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+    # pi = np.array([1.0,])
+    # z = [ -1 * np.ones(y[t].shape[0], dtype=np.int) for t in range(T) ]
+
+    llInit = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+    print(f'llInit: {llInit:.2f}')
+
+    pBirth, pDeath = (0.1, 0.3)
+    nSamples = 10000
+    ll = np.zeros(nSamples+1)
+    ll[0] = llInit
+    nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
+    for nS in range(nSamples):
+      dontSampleX = True if nS < 0 else False
+      z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC( o, y,
+        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath,
+        dontSampleX=dontSampleX)
+      ll[nS+1] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+
+      if move == 'birth':
+        nBirthProp += 1
+        if accept: nBirthAccept += 1
+      elif move == 'death':
+        nDeathProp += 1
+        if accept: nDeathAccept += 1
+
+      a = '+' if accept == True else '-'
+      print(f'Iter {nS:05}, LL: {ll[nS+1]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
+
+      # if nS % 10 == 0:
+      filename = f'tmp/rjmcmc_spider/sample-{nS:05}'
+      SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=ll[nS+1])
+
+    plt.figure()
+    plt.plot(ll, c='b', label='Sample LL')
+    plt.legend()
+    plt.title(f'nBirthProp: {nBirthProp}, nBirthAccept: {nBirthAccept}, nDeathProp: {nDeathProp}, nDeathAccept: {nDeathAccept}')
+    plt.show()
+
+    from npp import drawSED
+    drawSED.draw(o, y=y, x=x, z=z, theta=theta, E=E)
+    plt.show()
+
+  def testInitRJMCMC_hand(s):
+    alpha = 0.1
+    mL_const = -14.0
+
+    o = SED.opts(lie='se2')
+    y = du.load('../npp-data/se2_waving_hand/data')['y']
+    T = len(y)
+    maxObs = 3000
+    if maxObs > 0:
+      y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
+
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
+    Q = SED.inferQ(o, x)
+
+    mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+
+    # theta = np.zeros((T, 0,) + o.dxGm)
+    # E = np.zeros((0, o.dy, o.dy))
+    # S = np.zeros((0, o.dxA, o.dxA))
+    # Q = SED.inferQ(o, x)
+    # mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+    # pi = np.array([1.0,])
+    # z = [ -1 * np.ones(y[t].shape[0], dtype=np.int) for t in range(T) ]
+
+    llInit = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+    print(f'llInit: {llInit:.2f}')
+
+    pBirth, pDeath = (0.1, 0.3)
+    nSamples = 10000
+    ll = np.zeros(nSamples+1)
+    ll[0] = llInit
+    nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
+    for nS in range(nSamples):
+      dontSampleX = True if nS < 0 else False
+      z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC( o, y,
+        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath,
+        dontSampleX=dontSampleX)
+      ll[nS+1] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+
+      if move == 'birth':
+        nBirthProp += 1
+        if accept: nBirthAccept += 1
+      elif move == 'death':
+        nDeathProp += 1
+        if accept: nDeathAccept += 1
+
+      a = '+' if accept == True else '-'
+      print(f'Iter {nS:05}, LL: {ll[nS+1]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
+
+      # if nS % 10 == 0:
+      filename = f'tmp/rjmcmc_hand/sample-{nS:05}'
+      SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=ll[nS+1])
+
+    plt.figure()
+    plt.plot(ll, c='b', label='Sample LL')
+    plt.legend()
+    plt.title(f'nBirthProp: {nBirthProp}, nBirthAccept: {nBirthAccept}, nDeathProp: {nDeathProp}, nDeathAccept: {nDeathAccept}')
+    plt.show()
+
+    from npp import drawSED
+    drawSED.draw(o, y=y, x=x, z=z, theta=theta, E=E)
+    plt.show()
+
+
   def testInitRJMCMC(s):
     # run with 
     # nosetests -s --nologcapture test/testInference.py:test_se2_randomwalk3.testInitRJMCMC
     alpha = 0.1
-    mL_const = -7.0
+    # mL_const = -7.0
+    mL_const = -10.0
 
     o = s.o
     SED.initPriorsDataDependent(o, s.y)
@@ -701,17 +834,62 @@ class test_se2_randomwalk3(unittest.TestCase):
     llInit = SED.logJoint(o, s.y, z, x, theta, E, S, Q, alpha, pi, mL)
     print(f'llTrue: {llTrue:.2f}, llInit: {llInit:.2f}')
 
-    z, pi, theta, E, S, x, Q, ll = SED.sampleStepFC(o, s.y, alpha, z, pi,
-      theta, E, S, x, Q, mL, newPart=False)
+    # z, pi, theta, E, S, x, Q, ll = SED.sampleStepFC(o, s.y, alpha, z, pi,
+    #   theta, E, S, x, Q, mL, newPart=False)
 
-    # # artifically add a part
-    theta = np.concatenate((theta, np.zeros((s.T,1,) + o.dxGm)), axis=1)
-    E = np.concatenate((E, np.zeros((o.dy, o.dy))[np.newaxis]), axis=0)
-    S = np.concatenate((S, np.zeros((1, o.dxA, o.dxA))), axis=0)
-    pi = np.array([0.5, 0.5])
-    z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S)
-    assert theta.shape[1] == 0 and E.shape[0] == 0 and S.shape[0] == 0
+    pBirth, pDeath = (0.3, 0.1)
+    nSamples = 10000
+    ll = np.zeros(nSamples+1)
+    ll[0] = llInit
+    nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
+    for nS in range(nSamples):
+      dontSampleX = True if nS < 100 else False
+      z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC( o, s.y,
+        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath,
+        dontSampleX=dontSampleX)
+      ll[nS+1] = SED.logJoint(o, s.y, z, x, theta, E, S, Q, alpha, pi, mL)
 
+      if move == 'birth':
+        nBirthProp += 1
+        if accept: nBirthAccept += 1
+      elif move == 'death':
+        nDeathProp += 1
+        if accept: nDeathAccept += 1
+
+      a = '+' if accept == True else '-'
+      print(f'Iter {nS:05}, LL: {ll[nS+1]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
+
+      if nS % 100 == 0:
+        filename = f'tmp/rjmcmc/sample-{nS:05}'
+        SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=ll[nS+1])
+
+    plt.figure()
+    plt.plot(ll, c='b', label='Sample LL')
+    plt.axhline(llTrue, c='r', label='True LL')
+    plt.legend()
+    plt.title(f'nBirthProp: {nBirthProp}, nBirthAccept: {nBirthAccept}, nDeathProp: {nDeathProp}, nDeathAccept: {nDeathAccept}')
+    plt.show()
+
+    from npp import drawSED
+    drawSED.draw(o, y=s.y, x=x, z=z, theta=theta, E=E)
+    plt.show()
+
+    # # # artifically add a part
+    # theta = np.concatenate((theta, np.zeros((s.T,1,) + o.dxGm)), axis=1)
+    # E = np.concatenate((E, np.zeros((o.dy, o.dy))[np.newaxis]), axis=0)
+    # S = np.concatenate((S, np.zeros((1, o.dxA, o.dxA))), axis=0)
+    # pi = np.array([0.5, 0.5])
+    # z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S)
+    # assert theta.shape[1] == 0 and E.shape[0] == 0 and S.shape[0] == 0
+    #
+
+    
+    # for i in range(100):
+    #   accept, z_, x, theta_, E_, S_, Q, alpha, pi_, mL = SED.try_birth(o, s.y,
+    #     z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath)
+    #   if accept:
+    #     print(f'Accept at step {i}')
+    #     break
 
 
     # import matplotlib.pyplot as plt
