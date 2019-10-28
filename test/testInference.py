@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from npp import SED, evalSED, drawSED as draw
+from npp import SED, evalSED, drawSED as draw, icp
 from scipy.stats import multivariate_normal as mvn
 import scipy.optimize as so
 import numdifftools as nd
@@ -745,23 +745,135 @@ class test_se2_randomwalk3(unittest.TestCase):
     drawSED.draw(o, y=y, x=x, z=z, theta=theta, E=E)
     plt.show()
 
+  def testSkeletonize(s):
+    o = SED.opts(lie='se2')
+    # y = du.load('../npp-data/se2_waving_hand/data')['y']
+    y = du.load('../npp-data/se2_spider/data')['y']
+    T = len(y)
+    # maxObs = 3000
+    # if maxObs > 0:
+    #   y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
+    from skimage.morphology import medial_axis
+
+    skels = [ ]
+    for t in range(T):
+      # make binary image out of points
+      minI = np.min(y[t], axis=0).astype(np.int)
+      maxI = np.max(y[t], axis=0).astype(np.int)
+      im = np.zeros((maxI[1]+1 - minI[1], maxI[0]+1 - minI[0]), dtype=np.bool)
+      for ytn in y[t]:
+        i = ytn[1].astype(np.int) - minI[1]
+        j = ytn[0].astype(np.int) - minI[0]
+        im[i, j] = True
+      skel = medial_axis(im)
+      skels.append(skel)
+
+    du.ViewImgs(skels)
+    plt.show()
+
+    # plt.figure()
+    # plt.imshow(im)
+    # plt.figure()
+    # plt.imshow(skel)
+    # plt.show()
+
+    # skel, dist = medial_axis(im)
+
+    print('ok')
+    ip.embed()
+
+    
+  def test_dist_point2part(s):
+
+    useHand = True
+    if useHand:
+      alpha = 0.1
+      mL_const = -14.0
+
+      y = du.load('../npp-data/se2_waving_hand/data')['y']
+      # y = du.load('../npp-data/se2_spider/data')['y']
+      # y = y[:10]
+      y = y[:4]
+      T = len(y)
+      maxObs = 3000
+      if maxObs > 0:
+        y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
+
+      img = None
+      xlim = None
+      if xlim is None:
+        if y is not None and img is None:
+          xmin = np.min([ np.min(y[t][:,0]) for t in range(T) ])
+          xmax = np.max([ np.max(y[t][:,0]) for t in range(T) ])
+          diff = xmax - xmin
+          xlim = (xmin - diff*0.1, xmax + diff*0.1)
+
+      ylim = None
+      if ylim is None:
+        if y is not None and img is None:
+          ymin = np.min([ np.min(y[t][:,1]) for t in range(T) ])
+          ymax = np.max([ np.max(y[t][:,1]) for t in range(T) ])
+          diff = ymax - ymin
+          ylim = (ymax + diff*0.1, ymin - diff*0.1)
+
+
+      mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+      o = SED.opts(lie='se2')
+      SED.initPriorsDataDependent(o, y, scaleE=1.0, dfE=10, rotQ=25.0)
+      x = SED.initXDataMeans(o, y)
+      Q = SED.inferQ(o, x)
+      theta, E, S, z, pi = SED.initPartsAndAssoc(o, y[:1], x, alpha, mL)
+      E /= 2.
+    else:
+      o = s.o
+      y = s.y
+      theta = s.thetaTrue
+      E = s.ETrue
+
+    t1, t2 = (0, 3)
+    K = E.shape[0]
+    yPrev = y[t1]
+    yNext = y[t2]
+    x_t1 = x[t1]
+    # theta_t1 = np.stack([x[t1] @ theta[t1,k] for k in range(K) ])
+    theta_t1 = theta[t1]
+
+    # t1, t2 = (0, 3)
+    # yPrev = y[t1]
+    # yNext = y[t2]
+    # theta_t1 = s.thetaTrue[t1]
+    # E = s.ETrue
+
+    # icp.register(o, yPrev, yNext, theta_t1, E, xlim=xlim, ylim=ylim)
+    icp.register(o, yPrev, yNext, x_t1, theta_t1, E)
+    
+    # t, k = (0, 0)
+    # x_t = s.xTrue[t]
+    # theta_tk = s.thetaTrue[t, k]
+    # E_k = s.ETrue[k]
+    # dists = icp._dist_point2part(o, y_t, x_t @ theta_tk, E_k)
+    # print(dists)
+
   def testInitRJMCMC_hand(s):
     alpha = 0.1
     mL_const = -14.0
 
     o = SED.opts(lie='se2')
     y = du.load('../npp-data/se2_waving_hand/data')['y']
+    y = y[:4]
     T = len(y)
     maxObs = 3000
     if maxObs > 0:
       y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
 
-    SED.initPriorsDataDependent(o, y)
+    # SED.initPriorsDataDependent(o, y, scaleE=0.01, dfE=200)
+    SED.initPriorsDataDependent(o, y, scaleE=1.0, dfE=10, rotQ=25.0)
     x = SED.initXDataMeans(o, y)
     Q = SED.inferQ(o, x)
 
     mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
     theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+    E /= 10.
 
     # theta = np.zeros((T, 0,) + o.dxGm)
     # E = np.zeros((0, o.dy, o.dy))
@@ -774,15 +886,22 @@ class test_se2_randomwalk3(unittest.TestCase):
     llInit = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
     print(f'llInit: {llInit:.2f}')
 
-    pBirth, pDeath = (0.1, 0.3)
+    # pBirth, pDeath = (0.1, 0.3)
+    pBirth, pDeath, pSwitch = (0.0, 0.0, 0.9)
+
     nSamples = 10000
     ll = np.zeros(nSamples+1)
     ll[0] = llInit
     nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
+    nSwitchProp, nSwitchAccept = (0, 0)
+
     for nS in range(nSamples):
       dontSampleX = True if nS < 0 else False
+      if nS % 2 == 0: pSwitch = 0.99
+      else: pSwitch = 0.0
+
       z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC( o, y,
-        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath,
+        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwitch,
         dontSampleX=dontSampleX)
       ll[nS+1] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
 
@@ -792,12 +911,15 @@ class test_se2_randomwalk3(unittest.TestCase):
       elif move == 'death':
         nDeathProp += 1
         if accept: nDeathAccept += 1
+      elif move == 'switch':
+        nSwitchProp += 1
+        if accept: nSwitchAccept += 1
 
       a = '+' if accept == True else '-'
       print(f'Iter {nS:05}, LL: {ll[nS+1]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
 
       # if nS % 10 == 0:
-      filename = f'tmp/rjmcmc_hand/sample-{nS:05}'
+      filename = f'tmp/rjmcmc_hand_switch/sample-{nS:05}'
       SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=ll[nS+1])
 
     plt.figure()
@@ -820,14 +942,28 @@ class test_se2_randomwalk3(unittest.TestCase):
 
     o = s.o
     SED.initPriorsDataDependent(o, s.y)
-    x = SED.initXDataMeans(o, s.y)
-    theta = np.zeros((s.T, 0,) + o.dxGm)
-    E = np.zeros((0, o.dy, o.dy))
-    S = np.zeros((0, o.dxA, o.dxA))
+
+    ## 0-part init
+    # x = SED.initXDataMeans(o, s.y)
+    # theta = np.zeros((s.T, 0,) + o.dxGm)
+    # E = np.zeros((0, o.dy, o.dy))
+    # S = np.zeros((0, o.dxA, o.dxA))
+    # Q = SED.inferQ(o, x)
+    # mL = [ mL_const * np.ones(s.y[t].shape[0]) for t in range(s.T) ]
+    # pi = np.array([1.0,])
+    # z = [ -1 * np.ones(s.y[t].shape[0], dtype=np.int) for t in range(s.T) ]
+    ## end 0-part init
+
+    # nonparametric init
+    y, T = (s.y, s.T)
+
+    SED.initPriorsDataDependent(o, y)
+    x = SED.initXDataMeans(o, y)
     Q = SED.inferQ(o, x)
-    mL = [ mL_const * np.ones(s.y[t].shape[0]) for t in range(s.T) ]
-    pi = np.array([1.0,])
-    z = [ -1 * np.ones(s.y[t].shape[0], dtype=np.int) for t in range(s.T) ]
+
+    mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
+    theta, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL)
+    # end init
 
     llTrue = SED.logJoint(o, s.y, s.zTrue, s.xTrue, s.thetaTrue, s.ETrue,
       s.STrue, s.QTrue, alpha, s.piTrue, mL)
@@ -837,15 +973,17 @@ class test_se2_randomwalk3(unittest.TestCase):
     # z, pi, theta, E, S, x, Q, ll = SED.sampleStepFC(o, s.y, alpha, z, pi,
     #   theta, E, S, x, Q, mL, newPart=False)
 
-    pBirth, pDeath = (0.3, 0.1)
+    pBirth, pDeath, pSwitch = (0.3, 0.1, 0.3)
     nSamples = 10000
     ll = np.zeros(nSamples+1)
     ll[0] = llInit
     nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
+    nSwitchProp, nSwitchAccept = (0, 0)
+
     for nS in range(nSamples):
       dontSampleX = True if nS < 100 else False
       z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC( o, s.y,
-        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath,
+        alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwitch,
         dontSampleX=dontSampleX)
       ll[nS+1] = SED.logJoint(o, s.y, z, x, theta, E, S, Q, alpha, pi, mL)
 
@@ -855,12 +993,15 @@ class test_se2_randomwalk3(unittest.TestCase):
       elif move == 'death':
         nDeathProp += 1
         if accept: nDeathAccept += 1
+      elif move == 'switch':
+        nSwitchProp += 1
+        if accept: nSwitchAccept += 1
 
       a = '+' if accept == True else '-'
       print(f'Iter {nS:05}, LL: {ll[nS+1]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
 
       if nS % 100 == 0:
-        filename = f'tmp/rjmcmc/sample-{nS:05}'
+        filename = f'tmp/rjmcmc_switch/sample-{nS:05}'
         SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=ll[nS+1])
 
     plt.figure()
@@ -1089,3 +1230,62 @@ class test_eval(unittest.TestCase):
 
     tp, fp, fn, ids, tilde_tp, motsa, motsp, s_motsa = evalSED.mots(labels, gt)
     print(s_motsa)
+
+class test_reparam(unittest.TestCase):
+  def test1(s):
+    # general parameters
+    o = SED.opts(lie='se2')
+    m = getattr(lie, o.lie)
+    T, K = ( 50, 4 )
+    
+    # body frame
+    Q = np.diag((1.0, 2.0, .05))
+    x = np.zeros((T,) + o.dxGm)
+    x[0] = np.eye(o.dxA)
+    q = mvn.rvs(np.zeros(o.dxA), Q, size=T-1)
+    for t in range(1, T):
+      # qt = mvn.rvs(np.zeros(o.dxA), Q)
+      x[t] = x[t-1] @ m.expm(m.alg(q[t-1]))
+
+    # parts
+    S = np.diag((0.01, 0.02, .01))
+    theta = np.zeros((T, K) + o.dxGm)
+    s1 = np.array([[0, 12, 0], [0, -12, 0], [12, 0, 0], [-12, 0, 0]])
+    for k in range(K): theta[0,k] = m.expm(m.alg(s1[k]))
+    for t in range(1,T):
+      for k in range(K):
+        stk = mvn.rvs(np.zeros(o.dxA), S)
+        # stk = np.zeros(o.dxA)
+        # theta[t,k] = m.inv(x[t]) @ x[t-1] @ theta[t-1,k] @ m.expm(m.alg(stk))
+
+        theta[t,k] = theta[t-1,k] @ m.expm(m.alg(stk))
+        # theta[t,k] = m.expm(-m.alg(q[t-1])) @ theta[t-1,k] @ m.expm(m.alg(stk))
+    
+    colors = du.diffcolors(K, bgCols=[[0,0,0],[1,1,1]])
+    def show(t):
+      # plot x
+      T_world_object = x[t]
+      m.plot(T_world_object, np.tile([0,0,0], [2,1]), l=10.0)
+
+      # plot theta[t,k]
+      for k in range(K):
+        T_world_part = x[t] @ theta[t,k]
+        m.plot(T_world_part, np.tile(colors[k], [2,1]), l=10.0)
+
+        # T_obj_part = theta[t,k]
+        # m.plot(T_obj_part, np.tile(colors[k], [2,1]), l=10.0)
+
+        # T_part_world = m.inv(x[t] @ theta[t,k])
+        # m.plot(T_part_world, np.tile(colors[k], [2,1]), l=10.0)
+
+      plt.xlim(-50, 50)
+      plt.ylim(-50, 50)
+
+    # ip.embed()
+    du.ViewPlots(range(T), show)
+    plt.show()
+
+    
+    # # visualize
+    # draw.draw(o, x=x, theta=theta)
+    # plt.show()

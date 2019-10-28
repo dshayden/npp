@@ -1,4 +1,5 @@
 from . import util, sample
+from . import hmm
 
 import numpy as np, argparse, lie, warnings
 from scipy.linalg import block_diag
@@ -8,7 +9,7 @@ from scipy.stats import multivariate_normal as mvn, invwishart as iw
 from scipy.stats import dirichlet, beta as Be
 from scipy.special import logsumexp, gammaln
 import du, du.stats # move useful functions from these to utils (catrnd)
-import functools
+import functools, itertools
 
 import IPython as ip
 
@@ -1572,6 +1573,109 @@ def consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S):
 
   return z_, pi, theta, E, S
 
+def try_switch(o, y, z, x, theta, E, S, Q, alpha, pi, mL, ks=None):
+  m = getattr(lie, o.lie)
+  T, K = ( len(y), len(pi)-1 )
+  if K < 2: return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+  # sample two targets, set swap window up
+  # if ks is None: ks = np.random.choice(range(K), size=2, replace=False)
+  if ks is None: ks = np.random.choice(range(K), size=4, replace=False)
+
+  t0 = np.zeros(len(ks))
+  ts = list(range(1,T))
+  theta0 = [ theta[0, k] for k in ks ]
+
+  # build val, costxx, costxy functions
+  zeroObs = np.zeros(o.dy)
+  def val(t, k):
+    z_tk = z[t] == k
+    if np.sum(z_tk) == 0: y_tk, z_tk = (None, None)
+    else: y_tk = y[t][z_tk]
+    return theta[t,k], y_tk, z_tk
+  def costxx(t1, thetaPrev, t2, theta, k):
+    return logpdf_theta_tk(o, theta, thetaPrev, S[k] )
+
+  def costxy(t, k, theta, y_tk_world):
+    if y_tk_world is None: return 0.0
+    T_part_world = m.inv( x[t].dot(theta) )
+    y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
+    return np.sum(mvn.logpdf(y_tk_part, zeroObs, E[k], allow_singular=True))
+  
+  perms, piHmm, Psi, psi = hmm.build(t0, theta0, ts, ks, val, costxx, costxy)
+  states = hmm.ffbs(piHmm, Psi, psi)
+
+  ## visualization part 1 edit
+  # states[0] = 1
+  # states[0] = 4
+  ## end visualization part 1 edit
+
+  # no swaps, auto accept
+  # if np.all(states == 0): return True, z, x, theta, E, S, Q, alpha, pi, mL
+  if np.all(np.asarray(states) == 0):
+    return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+  theta_ = theta.copy()
+  z_ = [ z[t].copy() for t in range(T) ]
+  
+  # decode states
+  # k1, k2 = ks
+  ks = np.asarray(ks)
+  for s, t in zip(states, ts):
+    if s == 0: continue
+
+    # for kOld, kNew in zip(ks, ks[perms[s]]):
+    perms_s = np.asarray(perms[s])
+    for kOld, kNew in zip(ks, ks[perms_s]):
+      # kOld -> kNew
+      zkOld = z[t] == kOld
+      
+      z_[t][zkOld] = kNew
+      theta_[t,kNew] = theta[t,kOld].copy()
+
+
+    # s == 1 => switch corresponding theta[t,k] and z_tk
+    # zt_k1 = z_[t] == k1
+    # zt_k2 = z_[t] == k2
+    #
+    # theta_[t,k1], theta_[t,k2] = ( theta[t,k2], theta[t,k1] )
+    #
+    # z_[t][zt_k1] = k2
+    # z_[t][zt_k2] = k1
+
+  p_new = logJoint(o, y, z_, x, theta_, E, S, Q, alpha, pi, mL)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+  logRatio = p_new - p_old
+  if np.any(np.asarray(states) != 0):
+    print(f'Switch, p_new: {p_new:.2f}, p_old: {p_old:.2f}, logA: {logRatio:.2f}, states: {states}')
+    # print(f'Switch ({k1:02}, {k2:02}), p_new: {p_new:.2f}, p_old: {p_old:.2f}, logA: {logRatio:.2f}, states: {states}')
+
+  ## visualization part 2 edit
+  # from . import drawSED 
+  # import matplotlib.pyplot as plt, sys
+  # idx = 0
+  # t = ts[idx]
+  # plt.figure()
+  # drawSED.draw_t(o, y=y[t], z=z[t], x=x[t], theta=theta[t], E=E)
+  # plt.title('Original')
+  # plt.figure()
+  # drawSED.draw_t(o, y=y[t], z=z_[t], x=x[t], theta=theta_[t], E=E)
+  # perms_s = np.asarray(perms[states[idx]])
+  # plt.title(f'Swap {ks} -> {ks[perms_s]}')
+  #
+  # # plt.title(f'Swap {k1}, {k2}')
+  # # plt.title(f'Swap {ks}')
+  # plt.show()
+  # ip.embed()
+  # sys.exit()
+  ## end visualization part 2 edit
+
+  if logRatio >= 0 or np.random.rand() < np.exp(logRatio):
+    return True, z_, x, theta_, E, S, Q, alpha, pi, mL
+  else:
+    return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+
 def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
   # p(new)   g(old | new)   
   # ------ * ------------ * Jacobian
@@ -1686,17 +1790,22 @@ def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
   else:
     return False, z, x, theta, E, S, Q, alpha, pi, mL
 
-def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, **kwargs):
+def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwitch, **kwargs):
   # RJMCMC birth/death 
   K = len(pi) - 1
-  pGibbs = 1 - (pBirth + pDeath)
+  pGibbs = 1 - (pBirth + pDeath + pSwitch)
 
   if K == 0:
     rjmcmc_probs = np.array([pBirth, pGibbs])
     rjmcmc_probs /= np.sum(rjmcmc_probs)
     moves = ['birth', 'gibbs']
+  elif K >= 2:
+    rjmcmc_probs = np.array([pBirth, pDeath, pSwitch, pGibbs])
+    rjmcmc_probs /= np.sum(rjmcmc_probs)
+    moves = ['birth', 'death', 'switch', 'gibbs']
   else:
     rjmcmc_probs = np.array([pBirth, pDeath, pGibbs])
+    rjmcmc_probs /= np.sum(rjmcmc_probs)
     moves = ['birth', 'death', 'gibbs']
   assert np.isclose(np.sum(rjmcmc_probs), 1.0)
 
@@ -1707,6 +1816,28 @@ def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, **kw
   elif moves[move] == 'death': # death
     accept, z, x, theta, E, S, Q, alpha, pi, mL = try_death(o, y,
       z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth)
+  # elif moves[move] == 'switch':
+  #   accept, z, x, theta, E, S, Q, alpha, pi, mL = try_switch(o, y,
+  #     z, x, theta, E, S, Q, alpha, pi, mL)
+  # elif moves[move] == 'switch':
+  #   # combs = itertools.combinations(range(K), 2)
+  #   # combs = itertools.combinations(range(K), 3)
+  #   import random
+  #   combs = list(itertools.combinations(range(K), 3))
+  #   random.shuffle(combs)
+  #   for cnt, comb in enumerate(combs):
+  #     ks = comb
+  #     accept, z, x, theta, E, S, Q, alpha, pi, mL = try_switch(o, y,
+  #       z, x, theta, E, S, Q, alpha, pi, mL, ks=ks)
+  #     if not np.all( np.asarray(comb) == np.arange(K) ) and accept: break
+  elif moves[move] == 'switch':
+    import random
+    combs = list(itertools.combinations(range(K), 2))
+    random.shuffle(combs)
+    for comb in combs:
+      ks = comb
+      accept, z, x, theta, E, S, Q, alpha, pi, mL = try_switch(o, y,
+        z, x, theta, E, S, Q, alpha, pi, mL, ks=ks)
   elif moves[move] == 'gibbs':
     accept = True
     dontSampleX = kwargs.get('dontSampleX', False)
