@@ -8,83 +8,67 @@ from scipy.stats import chi2
 import scipy.optimize
 import matplotlib.pyplot as plt
 import functools, numdifftools
-import IPython as ip
+import IPython as ip, sys
 
 def register(o, y_t1, y_t, x_t1, theta_t1, E, **kwargs):
+  # y_t1, x_t1, theta_t1 are previous time
+
   K = E.shape[0]
   m = getattr(lie, o.lie)
 
-  # Initialize q_t
+  # Initialize q_t as relative mean
   muDiff = np.mean(y_t, axis=0) - np.mean(y_t1, axis=0)
-  # muDiff = np.mean(y_t, axis=0)
 
   Q_t = SED.MakeRd(np.eye(o.dy), muDiff)
-  # Q_t = SED.MakeRd(np.eye(o.dy), np.zeros(o.dy))
   q_t = m.algi(m.logm(Q_t))
 
-  # QTx = np.stack([ Q_t @ theta_t1[k] for k in range(K) ])
-  QTx = np.stack([ x_t1 @ Q_t @ theta_t1[k] for k in range(K) ])
-  z_t = z_tPrev = _match(o, y_t, QTx, E)
+  # get observations y_t in coordinates of x_{t-1}
+  y_tObj = SED.TransformPointsNonHomog(m.inv(x_t1), y_t)
 
-  cost0 = _objective(o, y_t, theta_t1, E, z_tPrev, q_t)
+  QTx = np.stack([ Q_t @ theta_t1[k] for k in range(K) ])
+  z_t0 = _match(o, y_tObj, QTx, E, max=True)
+  cost0 = _objective(o, y_tObj, theta_t1, E, q_t)
 
-  drawSED.draw_t(o, x=x_t1 @ Q_t, theta=theta_t1, E=E, y=y_t, z=z_t, reverseY=True)
+  plot = kwargs.get('plot', False)
+  if plot:
+    # draw prev time with previous parts, ensure we start with reasonable fit
+    QTx1 = np.stack([ x_t1 @ theta_t1[k] for k in range(K) ])
+    z_t1 = _match(o, y_t1, QTx1, E, max=True)
+    drawSED.draw_t(o, x=x_t1, theta=theta_t1, E=E, y=y_t1, z=z_t1, reverseY=True)
+    plt.title('Previous time')
 
-  # drawSED.draw_t(o, x=Q_t, theta=theta_t1, E=E, y=y_t, z=z_t, reverseY=True)
-  # drawSED.draw_t(o, x=np.eye(3), theta=QTx, E=E, y=y_t, z=z_t, reverseY=True)
-
-  xlim, ylim = (kwargs.get('xlim', None), kwargs.get('ylim', None))
-  if xlim is not None: plt.xlim(xlim)
-  if ylim is not None: plt.ylim(ylim)
-
-  # plt.xlim(-40, 40); plt.ylim(-40, 40)
-  plt.title(f'cost0 {cost0:.2f}')
+    # draw this time with initial q_t estimate and consequent labels
+    plt.figure()
+    drawSED.draw_t(o, x=Q_t, theta=theta_t1, E=E, y=y_tObj, z=z_t0, reverseY=True)
+    plt.title(f'Current time, initial estimate, cost0 {cost0:.2f}')
 
   maxIter = kwargs.get('maxIter', 1)
   for n in range(maxIter):
-    f = functools.partial(_objective, o, y_t, theta_t1, E, z_tPrev)
+    f = functools.partial(_objective, o, y_tObj, theta_t1, E)
     gradf = numdifftools.Gradient(f)
     res = scipy.optimize.minimize(f, q_t, method='BFGS', jac=gradf)
     q_t = res.x
-    # print(res)
     cost = f(q_t)
-
-    print(q_t, cost)
 
     Q_t = m.expm(m.alg(q_t))
     QTx = np.stack([ Q_t @ theta_t1[k] for k in range(K) ])
+    z_t = _match(o, y_tObj, QTx, E, max=True)
 
-    # drawSED.draw_t(o, x=np.eye(3), theta=QTx, E=E, y=y_t, z=z_t)
-    # plt.show()
+  # draw this time with updated q_t estimate and labels
+  if plot:
+    plt.figure()
+    drawSED.draw_t(o, x=Q_t, theta=theta_t1, E=E, y=y_tObj, z=z_t, reverseY=True)
+    plt.title(f'Current time, final estimate, cost {cost:.2f}')
+    plt.show()
 
-    z_t = _match(o, y_t, QTx, E, max=True)
-    
-    z_tPrev = z_t
+  return Q_t
 
-  plt.figure()
-  
-  drawSED.draw_t(o, x=x_t1 @ Q_t, theta=theta_t1, E=E, y=y_t, z=z_t, reverseY=True)
-  # drawSED.draw_t(o, x=Q_t, theta=theta_t1, E=E, y=y_t, z=z_t, reverseY=True)
-  # drawSED.draw_t(o, x=np.eye(3), theta=QTx, E=E, y=y_t, z=z_t, reverseY=True)
-  if xlim is not None: plt.xlim(xlim)
-  if ylim is not None: plt.ylim(ylim)
-  # plt.xlim(-40, 40); plt.ylim(-40, 40)
-  plt.title(f'cost {cost:.2f}')
-  plt.show()
-
-  print(q_t)
-
-  # cost = _objective(o, y_t, theta_t1, E, z_t, q_t)
-  # print(cost)
-
-  # drawSED.draw_t(o, x=np.eye(3), theta=QTx, E=E, y=y_t, z=z_t)
-  # plt.show()
 
 def _mahalCentered(y, VI):
   dists = cdist(y, np.zeros((1, y.shape[1])), metric='mahalanobis', VI=VI)
   return dists.squeeze()
 
-def _objective(o, y_t, Tx, E, z_t, q_t):
+def _objective(o, y_t, Tx, E, q_t):
   m = getattr(lie, o.lie)
 
   # transform points to part coordinates
@@ -101,15 +85,10 @@ def _objective(o, y_t, Tx, E, z_t, q_t):
   # object center cost
   _, dq = m.Rt(Q_t)
   yMu = np.mean(y_t, axis=0)
-  ctrCost = np.linalg.norm(dq - yMu)
+  # ctrCost = np.linalg.norm(dq - yMu)
+  ctrCost = 0.0
 
   return np.sum(smoothMinDists) + ctrCost
-
-  # dists = np.zeros(N)
-  # for k in range(K):
-  #   ztk = z_t == k
-  #   dists[ztk] = _dist_point2part(o, y_t[ztk], QTx[k], E[k])
-  # return np.sum(dists)
 
 def _match(o, y_t, QTx, E, **kwargs):
   """ Sample assignments z_t to one of K parts (QTx[k], E[k]).

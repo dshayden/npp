@@ -783,15 +783,15 @@ class test_se2_randomwalk3(unittest.TestCase):
     ip.embed()
 
     
-  def test_dist_point2part(s):
+  def test_parts_icp(s):
 
     useHand = True
     if useHand:
       alpha = 0.1
       mL_const = -14.0
 
-      y = du.load('../npp-data/se2_waving_hand/data')['y']
-      # y = du.load('../npp-data/se2_spider/data')['y']
+      # y = du.load('../npp-data/se2_waving_hand/data')['y']
+      y = du.load('../npp-data/se2_spider/data')['y']
       # y = y[:10]
       y = y[:4]
       T = len(y)
@@ -799,30 +799,13 @@ class test_se2_randomwalk3(unittest.TestCase):
       if maxObs > 0:
         y = [ yt[np.random.choice(range(len(yt)), min(maxObs, len(yt)), replace=False)] for yt in y ]
 
-      img = None
-      xlim = None
-      if xlim is None:
-        if y is not None and img is None:
-          xmin = np.min([ np.min(y[t][:,0]) for t in range(T) ])
-          xmax = np.max([ np.max(y[t][:,0]) for t in range(T) ])
-          diff = xmax - xmin
-          xlim = (xmin - diff*0.1, xmax + diff*0.1)
-
-      ylim = None
-      if ylim is None:
-        if y is not None and img is None:
-          ymin = np.min([ np.min(y[t][:,1]) for t in range(T) ])
-          ymax = np.max([ np.max(y[t][:,1]) for t in range(T) ])
-          diff = ymax - ymin
-          ylim = (ymax + diff*0.1, ymin - diff*0.1)
-
-
       mL = [ mL_const * np.ones(y[t].shape[0]) for t in range(T) ]
       o = SED.opts(lie='se2')
       SED.initPriorsDataDependent(o, y, scaleE=1.0, dfE=10, rotQ=25.0)
       x = SED.initXDataMeans(o, y)
       Q = SED.inferQ(o, x)
-      theta, E, S, z, pi = SED.initPartsAndAssoc(o, y[:1], x, alpha, mL)
+      theta, E, S, z, pi = SED.initPartsAndAssoc(o, y[:1], x, alpha, mL,
+        maxIgter=500, nInit=5)
       E /= 2.
     else:
       o = s.o
@@ -834,25 +817,10 @@ class test_se2_randomwalk3(unittest.TestCase):
     K = E.shape[0]
     yPrev = y[t1]
     yNext = y[t2]
-    x_t1 = x[t1]
-    # theta_t1 = np.stack([x[t1] @ theta[t1,k] for k in range(K) ])
-    theta_t1 = theta[t1]
+    xPrev = x[t1]
+    thetaPrev = theta[t1]
 
-    # t1, t2 = (0, 3)
-    # yPrev = y[t1]
-    # yNext = y[t2]
-    # theta_t1 = s.thetaTrue[t1]
-    # E = s.ETrue
-
-    # icp.register(o, yPrev, yNext, theta_t1, E, xlim=xlim, ylim=ylim)
-    icp.register(o, yPrev, yNext, x_t1, theta_t1, E)
-    
-    # t, k = (0, 0)
-    # x_t = s.xTrue[t]
-    # theta_tk = s.thetaTrue[t, k]
-    # E_k = s.ETrue[k]
-    # dists = icp._dist_point2part(o, y_t, x_t @ theta_tk, E_k)
-    # print(dists)
+    Q_t = icp.register(o, yPrev, yNext, xPrev, thetaPrev, E, plot=True)
 
   def testInitRJMCMC_hand(s):
     alpha = 0.1
