@@ -1,4 +1,5 @@
 from . import SED, drawSED
+from .SED_tf import np2tf, ex, alg, generators_tf, obs_t_tf, Ei_tf, Si_tf
 import du, du.stats
 import lie
 from scipy.special import logsumexp
@@ -9,6 +10,118 @@ import scipy.optimize
 import matplotlib.pyplot as plt
 import functools, numdifftools
 import IPython as ip, sys
+import tensorflow as tf
+
+def optimize_local(o, y_t, x_t, thetaPrev, E, S, **kwargs):
+  m = getattr(lie, o.lie)
+  K = thetaPrev.shape[0]
+
+  yPart = [ obs_t_tf(np2tf(
+    SED.TransformPointsNonHomog(m.inv(x_t @ thetaPrev[k]), y_t) ))
+    for k in range(K)
+  ]
+
+  Si = Si_tf(o, S)
+  Ei = Ei_tf(o, E)
+
+  G = generators_tf(o)
+  s_t = tf.Variable(np2tf( kwargs.get('s_t', np.zeros(o.dxA*K)) ))
+
+  def objective(s_t): 
+    s_t_sep = [ s_t[k*o.dxA : (k+1)*o.dxA] for k in range(K) ]
+
+    # observation cost
+    S_t_inv = [ ex(-alg(G, s_t_sep[k])) for k in range(K) ]
+
+    # v is Nx3                          3x3, Nx3
+    v = [ tf.transpose(tf.linalg.matmul(S_t_inv[k], yPart[k], transpose_b=True))
+      for k in range(K) ]
+
+    # mahalanobis distance of <v_n, 0>
+    vE = [ tf.linalg.matmul(v[k], Ei[k]) for k in range(K) ]
+    negDists = tf.stack([
+      -tf.reduce_sum(tf.multiply(vE[k], v[k]), axis=1) for k in range(K)]
+    )
+    smooth_mins = -tf.math.reduce_logsumexp(negDists, axis=0)
+    cost = tf.reduce_sum(smooth_mins)
+
+    # dynamics cost   
+    sS = [ tf.linalg.matvec(Si[k], s_t_sep[k]) for k in range(K) ]
+    sSs = [ tf.tensordot(sS[k], s_t_sep[k], axes=1) for k in range(K) ]
+    costDyn = tf.reduce_sum(sSs)
+
+    return cost + costDyn
+
+  def grad(s_t):
+    cost = tf.Variable(0.0)
+    with tf.GradientTape() as tape: cost = objective(s_t)
+    return cost, tape.gradient(cost, s_t)
+
+  steps = kwargs.get('opt_steps', 10000)
+  opt = tf.train.AdamOptimizer(learning_rate=0.01)
+  print('Running Local Optimization:')
+  prevCost = 1e6
+  for s in range(steps):
+    cost, grads = grad(s_t)
+    opt.apply_gradients([(grads, s_t)])
+    print(f'{s:05}, cost: {cost.numpy():.2f}, s: {s_t.numpy()}')
+    if np.abs(cost.numpy() - prevCost) < 1e-6: break
+    else: prevCost = cost.numpy()
+
+  S_t = [ ex(alg(G, s_t[k*o.dxA : (k+1)*o.dxA])).numpy() for k in range(K) ]
+  return np.stack(S_t)
+
+def optimize_global(o, y_t, xPrev, theta_t, E, **kwargs):
+  m = getattr(lie, o.lie)
+  K = theta_t.shape[0]
+
+  yObj = obs_t_tf(np2tf( SED.TransformPointsNonHomog(m.inv(xPrev), y_t) ))
+
+  # theta = np2tf(theta_t)
+  theta_inv = [ np2tf(m.inv(theta_t[k])) for k in range(K) ]
+
+  Ei = Ei_tf(o, E)
+  G = generators_tf(o)
+  q_t = tf.Variable(np2tf( kwargs.get('q_t', np.zeros(o.dxA)) ))
+
+  def objective(q_t):
+    Q_t_inv = ex(-alg(G,q_t))
+
+    thetaQ = [ tf.linalg.matmul(theta_inv[k], Q_t_inv) for k in range(K) ]
+
+    # have 3 x 3 and N x 3
+    v = [ tf.transpose(tf.linalg.matmul(thetaQ[k], yObj, transpose_b=True))
+      for k in range(K) ]
+
+    # get mahalanobis distance of v, 0 parameterized by E_k
+    vE = [ tf.matmul(v[k], Ei[k]) for k in range(K) ]
+
+    negDists = tf.stack([
+      -tf.reduce_sum(tf.multiply(vE[k], v[k]), axis=1) for k in range(K)]
+    )
+
+    smooth_mins = -tf.math.reduce_logsumexp(negDists, axis=0)
+    cost = tf.reduce_sum(smooth_mins)
+    return cost
+
+  def grad(q_t):
+    cost = tf.Variable(0.0)
+    with tf.GradientTape() as tape: cost = objective(q_t)
+    return cost, tape.gradient(cost, q_t)
+
+  steps = kwargs.get('opt_steps', 500)
+  opt = tf.train.AdamOptimizer(learning_rate=0.1)
+  print('Running Global Optimization:')
+  prevCost = 1e6
+  for s in range(steps):
+    cost, grads = grad(q_t)
+    opt.apply_gradients([(grads, q_t)])
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, q: {q_t.numpy()}')
+    if np.abs(cost.numpy() - prevCost) < 1e-4: break
+    else: prevCost = cost.numpy()
+
+  return ex(alg(G,q_t)).numpy()
+
 
 def register(o, y_t1, y_t, x_t1, theta_t1, E, **kwargs):
   # y_t1, x_t1, theta_t1 are previous time

@@ -790,8 +790,8 @@ class test_se2_randomwalk3(unittest.TestCase):
       alpha = 0.1
       mL_const = -14.0
 
-      # y = du.load('../npp-data/se2_waving_hand/data')['y']
-      y = du.load('../npp-data/se2_spider/data')['y']
+      y = du.load('../npp-data/se2_waving_hand/data')['y']
+      # y = du.load('../npp-data/se2_spider/data')['y']
       # y = y[:10]
       y = y[:4]
       T = len(y)
@@ -805,14 +805,18 @@ class test_se2_randomwalk3(unittest.TestCase):
       x = SED.initXDataMeans(o, y)
       Q = SED.inferQ(o, x)
       theta, E, S, z, pi = SED.initPartsAndAssoc(o, y[:1], x, alpha, mL,
-        maxIgter=500, nInit=5)
-      E /= 2.
+        maxIter=500, nInit=5)
+      # S[:,:o.dy,:o.dy] *= 3
+      # E /= 2.0
+
     else:
       o = s.o
       y = s.y
       theta = s.thetaTrue
       E = s.ETrue
+      S = s.STrue
 
+    m = getattr(lie, o.lie)
     t1, t2 = (0, 3)
     K = E.shape[0]
     yPrev = y[t1]
@@ -820,7 +824,38 @@ class test_se2_randomwalk3(unittest.TestCase):
     xPrev = x[t1]
     thetaPrev = theta[t1]
 
-    Q_t = icp.register(o, yPrev, yNext, xPrev, thetaPrev, E, plot=True)
+    muDiff = np.mean(yNext, axis=0) - np.mean(yPrev, axis=0)
+    Q_t0 = SED.MakeRd(np.eye(o.dy), muDiff)
+    q_t0 = m.algi(m.logm(Q_t0))
+
+    Q_t = icp.optimize_global(o, yNext, xPrev, thetaPrev, E, q_t=q_t0)
+    xNext = xPrev @ Q_t
+
+    S_t = icp.optimize_local(o, yNext, xNext, thetaPrev, E, S)
+    thetaNext = np.stack([ thetaPrev[k] @ S_t[k] for k in range(K) ])
+    
+    # first try method
+    # Q_t = icp.register(o, yPrev, yNext, xPrev, thetaPrev, E, plot=False)
+
+    # original global, local estimate
+    xNext0 = xPrev @ Q_t0
+    draw.draw_t(o, y=yNext, x=xNext0, theta=thetaPrev, E=E, reverseY=True)
+    plt.title('Initial')
+
+    # new global estimate
+    plt.figure()
+    xNext = xPrev @ Q_t
+    draw.draw_t(o, y=yNext, x=xNext, theta=thetaPrev, E=E, reverseY=True)
+    plt.title('Updated Global')
+
+    # new global and local estimate
+    plt.figure()
+    draw.draw_t(o, y=yNext, x=xNext, theta=thetaNext, E=E, reverseY=True)
+    plt.title('Updated Global and Local')
+
+    plt.show()
+
+
 
   def testInitRJMCMC_hand(s):
     alpha = 0.1
