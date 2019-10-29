@@ -1262,7 +1262,8 @@ def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
 
   return mL
 
-def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan):
+def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, mL, ll,
+  subsetIdx=None, dataset=None):
   r''' Save sample to disk.
 
   INPUT
@@ -1276,11 +1277,17 @@ def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, ll=np.nan):
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    mL
     ll (float): joint log-likelihood
+    subsetIdx (list of ndarray, [ [N_1,], ... [N_T,] ]): Observation subset
+    dataset (string): Path to dataset
   '''
   dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
-    ll=ll)
+    mL=mL, ll=ll, subsetIdx=subsetIdx, dataset=dataset)
   du.save(filename, dct)
+  # dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
+  #   ll=ll)
+  # du.save(filename, dct)
 
 def loadSample(filename):
   r''' Load sample from disk.
@@ -1298,13 +1305,17 @@ def loadSample(filename):
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    mL
     ll (float): joint log-likelihood
+    subsetIdx (list of ndarray, [ [N_1,], ... [N_T,] ]): Observation subset
+    dataset (string): Path to dataset
   ''' 
   d = du.load(filename)
-  o, alpha, z, pi, theta, E, S, x, Q, ll = \
+  o, alpha, z, pi, theta, E, S, x, Q, mL, ll = \
     (d['o'], d['alpha'], d['z'], d['pi'], d['theta'], d['E'], d['S'], d['x'],
-     d['Q'], d['ll'])
-  return o, alpha, z, pi, theta, E, S, x, Q, ll
+     d['Q'], d['mL'], d['ll'])
+  subsetIdx, dataset = ( d.get('subsetIdx', None), d.get('dataset', None) )
+  return o, alpha, z, pi, theta, E, S, x, Q, mL, ll, subsetIdx, dataset
 
 def sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
   r''' Attempt to sample new part, initialize if sampled.
