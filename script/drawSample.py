@@ -1,4 +1,4 @@
-from npp import SED, drawSED
+from npp import SED, drawSED, tmu
 import argparse, du, numpy as np, matplotlib.pyplot as plt
 import os
 
@@ -44,9 +44,36 @@ def main(args):
 
   if args.save: fnames = [ f'{args.save}/img-{t:05}.png' for t in range(T) ]
   else: fnames = None
+  
+  if o.lie == 'se2':
+    scenes_or_none = drawSED.draw(o, y=y, x=x, theta=theta, E=E, img=imgs, z=z,
+      filename=fnames)
+  else:
+    # don't use SED.draw save ability because we want to adjust the camera of
+    # each scene dependent on all others
+    scenes_or_none = drawSED.draw(o, y=y, x=x, theta=theta, E=E, img=imgs, z=z)
 
-  drawSED.draw(o, y=y, x=x, theta=theta, E=E, img=imgs, z=z, filename=fnames)
-  if not args.save: plt.show()
+  if o.lie == 'se3':
+    scenes = scenes_or_none
+    transform = tmu.CameraFromScenes(scenes)
+
+    for scene in scenes:
+      transform_t = scene.camera.transform.copy()
+      # set transform as 1.25 of min z. This is specific to se3_marmoset for now
+      #   multiply instead of divide because maybe camera is looking backwards?
+      transform_t[2,3] = transform[2,3] * 1.25
+      scene.camera.transform = transform_t
+
+  if not args.save:
+    if o.lie == 'se3':
+      for t in range(T): scenes[t].show()
+    else:
+      plt.show()
+  elif args.save and o.lie == 'se3':
+    # save renders with common camera
+    for t in range(T):
+      tmu.save_render(scenes[t], fnames[t])
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')

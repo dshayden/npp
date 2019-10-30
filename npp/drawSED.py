@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import du, du.stats, lie
-# from . import tmu # todo: add sphere
+from . import tmu
 from . import SED
 import logging
 logging.getLogger("trimesh").setLevel(logging.ERROR) # stop annoying trimesh logging
@@ -79,7 +79,7 @@ def draw_t_SE3(o, **kwargs):
       c = np.tile( (c*255).astype(np.uint8), [4,1] )
 
       T_world_part = du.asShape(x, o.dxGm).dot(
-        du.asShape(theta[k], o.dtGm))
+        du.asShape(theta[k], o.dxGm))
 
       scene.add_geometry(tmu.MakeAxes(20.0, T_world_part, c, minor=0.01))
       # scene.add_geometry(tmu.MakeAxes(2.0, T_world_part, c, minor=0.01))
@@ -93,7 +93,7 @@ def draw_t_SE3(o, **kwargs):
       c = (c*255).astype(np.uint8)
 
       T_world_part = du.asShape(x, o.dxGm).dot(
-        du.asShape(theta[k], o.dtGm))
+        du.asShape(theta[k], o.dxGm))
 
       # TODO: eigvals not sorted, this is probably bad idea
       ell = tmu.MakeEllipsoid(T_world_part,
@@ -337,8 +337,11 @@ def draw(o, **kwargs):
     def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, style):
       import sys
       sys.path.append('code')
-      import igpSEN_relative as igp
-      scene = igp.draw_t(o, x=x, theta=theta, y=y, title=title, z=z,
+      # import igpSEN_relative as igp
+      # scene = igp.draw_t(o, x=x, theta=theta, y=y, title=title, z=z,
+      #   zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
+      from npp import drawSED, tmu
+      scene = drawSED.draw_t(o, x=x, theta=theta, y=y, title=title, z=z,
         zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
       scene.set_camera()
       return scene

@@ -1,9 +1,18 @@
 # trimesh utilities and helpers
+import npp
 import numpy as np
 import trimesh as tm
 import du
 import datetime
 import pyglet
+import os, pathlib
+import IPython as ip
+
+currentPath = pathlib.Path(os.path.abspath(__file__))
+spherePath = currentPath.parents[1] / 'data/sphere/sphere_ico5.obj'
+assert spherePath.is_file(), "Can't find data/sphere/sphere_ico5.obj."
+sphere = tm.load(str(spherePath))
+nSV = sphere.vertices.shape[0]
 
 def LoadObjs(objDir):
   """ Parallel load obj files in meshDir. """
@@ -11,8 +20,6 @@ def LoadObjs(objDir):
   return du.Parfor(tm.load, files, showProgress=False)
 
 
-sphere = tm.load('data/sphere/sphere_ico5.obj')
-nSV = sphere.vertices.shape[0]
 def MakeEllipsoid(Tx, scale, color=None):
   """ Make ellipsoidal mesh 
 
@@ -45,7 +52,8 @@ def MakeEllipsoid(Tx, scale, color=None):
 def save_render(mesh_or_scene, fname, res=[1920,1080]):
   """ Offscreen render and save scene as png. Won't work through x11. """
   scene = GetScene(mesh_or_scene)
-  png = scene.save_image(resolution=res, visible=False)
+  # png = scene.save_image(resolution=res, visible=False)
+  png = scene.save_image(resolution=res, visible=True)
   with open(fname, 'wb') as fid: fid.write(png)
   
 
@@ -161,7 +169,9 @@ def ConstructPointCloud(y, colors=None):
 
 
 def CameraFromScenes(meshes_or_scenes):
-  cameras = np.stack([ GetScene(ms).graph['camera'][0]
+  # cameras = np.stack([ GetScene(ms).graph['camera'][0]
+  #   for ms in meshes_or_scenes ])
+  cameras = np.stack([ GetScene(ms).camera.transform.copy()
     for ms in meshes_or_scenes ])
   minTranslation = np.min(cameras[:,:-1,-1], axis=0)
   cam = cameras[0].copy()
