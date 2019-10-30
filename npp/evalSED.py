@@ -47,7 +47,9 @@ def mots(results, gt, **kwargs):
   # H = du.load(results)
   H = results
 
-  gtData = du.load(gt)
+  # gtData = du.load(gt)
+  gtData = gt
+
   G = gtData['labels']
   evalIdx = gtData['gtIdx']
   T = len(H)

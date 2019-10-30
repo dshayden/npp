@@ -8,21 +8,7 @@ def main(args):
   data = du.load(f'{args.datasetPath}/data')
   yAll = data['y']
 
-  # if isdir(f'{args.datasetPath}/imgs'): imgPath = f'{args.datasetPath}/imgs'
-  # elif isdir(f'{args.datasetPath}/rgb'): imgPath = f'{args.datasetPath}/rgb'
-  # else: imgPath = ''
-  # if os.path.isdir(imgPath):
-  #   imgPaths = du.GetImgPaths(imgPath)
-  #   if len(imgPaths) > 100:
-  #     du.imread(imgPaths[0])
-  #     imgs = du.ParforT(du.imread, imgPaths)
-  #   else:
-  #     imgs = du.For(du.imread, imgPaths)
-  # else:
-  #   imgs = None
-
   samples = du.GetFilePaths(f'{args.resultPath}', 'gz')
-
   o, alpha, z, pi, theta, E, S, x, Q, mL, ll, subsetIdx, dataset = \
     SED.loadSample(samples[args.sampleIdx])
   T = len(z)
