@@ -58,13 +58,12 @@ def optimize_local(o, y_t, x_t, thetaPrev, E, S, **kwargs):
     return cost, tape.gradient(cost, s_t)
 
   steps = kwargs.get('opt_steps', 10000)
-  opt = tf.train.AdamOptimizer(learning_rate=0.01)
-  print('Running Local Optimization:')
+  opt = tf.compat.v1.train.AdamOptimizer(learning_rate=0.1)
   prevCost = 1e6
   for s in range(steps):
     cost, grads = grad(s_t)
     opt.apply_gradients([(grads, s_t)])
-    print(f'{s:05}, cost: {cost.numpy():.2f}, s: {s_t.numpy()}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, s: {s_t.numpy()}')
     if np.abs(cost.numpy() - prevCost) < 1e-6: break
     else: prevCost = cost.numpy()
 
@@ -110,8 +109,7 @@ def optimize_global(o, y_t, xPrev, theta_t, E, **kwargs):
     return cost, tape.gradient(cost, q_t)
 
   steps = kwargs.get('opt_steps', 500)
-  opt = tf.train.AdamOptimizer(learning_rate=0.1)
-  print('Running Global Optimization:')
+  opt = tf.compat.v1.train.AdamOptimizer(learning_rate=0.1)
   prevCost = 1e6
   for s in range(steps):
     cost, grads = grad(q_t)

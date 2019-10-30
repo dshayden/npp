@@ -67,7 +67,10 @@ def main(args):
     for k in range(K): theta[tNext,k] = theta[tPrev,k] @ S_t[k]
 
   # iterate through t, t+1 to get x, theta estimates
+  du.tic()
   for tPrev, tNext in zip(ts[:-1], ts[1:]):
+    print(f'Optimizing Global then Local from time {tPrev:03} to {tNext:03}. ' + \
+      f'Elapsed: {du.toc():.2f} seconds')
     estimate_global_then_parts(tPrev, tNext)
 
   # Specially handle t=0

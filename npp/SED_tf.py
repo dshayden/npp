@@ -1,14 +1,7 @@
 import numpy as np, tensorflow as tf, lie
 from . import SED
-tf.enable_eager_execution()
+tf.compat.v1.enable_eager_execution()
 import IPython as ip, sys
-
-
-#### New functions for Parts-ICP ####
-
-# need ability to encode q_t as tensorflow variable to do optimization on
-# need ability to encode all s_tk as tensorflow variables
-# need objectives for global, parts
 
 
 #### Old functions for attempting full trajectory optimization ####
