@@ -1,20 +1,25 @@
 from npp import SED, drawSED, tmu
 import argparse, du, numpy as np, matplotlib.pyplot as plt
+from os.path import isdir
 import os
+import IPython as ip
 
 def main(args):
-  yAll = du.load(f'{args.datasetPath}/data')['y']
+  data = du.load(f'{args.datasetPath}/data')
+  yAll = data['y']
 
-  imgPath = f'{args.datasetPath}/imgs'
-  if os.path.isdir(imgPath):
-    imgPaths = du.GetImgPaths(imgPath)
-    if len(imgPaths) > 100:
-      du.imread(imgPaths[0])
-      imgs = du.ParforT(du.imread, imgPaths)
-    else:
-      imgs = du.For(du.imread, imgPaths)
-  else:
-    imgs = None
+  # if isdir(f'{args.datasetPath}/imgs'): imgPath = f'{args.datasetPath}/imgs'
+  # elif isdir(f'{args.datasetPath}/rgb'): imgPath = f'{args.datasetPath}/rgb'
+  # else: imgPath = ''
+  # if os.path.isdir(imgPath):
+  #   imgPaths = du.GetImgPaths(imgPath)
+  #   if len(imgPaths) > 100:
+  #     du.imread(imgPaths[0])
+  #     imgs = du.ParforT(du.imread, imgPaths)
+  #   else:
+  #     imgs = du.For(du.imread, imgPaths)
+  # else:
+  #   imgs = None
 
   samples = du.GetFilePaths(f'{args.resultPath}', 'gz')
 
@@ -44,35 +49,83 @@ def main(args):
 
   if args.save: fnames = [ f'{args.save}/img-{t:05}.png' for t in range(T) ]
   else: fnames = None
+
+  def getImgs(path):
+    imgPaths = du.GetImgPaths(imgPath)
+    if len(imgPaths) > 100:
+      du.imread(imgPaths[0]); imgs = du.ParforT(du.imread, imgPaths)
+    else:
+      imgs = du.For(du.imread, imgPaths)
+    return imgs
   
+  # if isdir(f'{args.datasetPath}/imgs'): imgPath = f'{args.datasetPath}/imgs'
+  # elif isdir(f'{args.datasetPath}/rgb'): imgPath = f'{args.datasetPath}/rgb'
+  # else: imgPath = ''
+  # if os.path.isdir(imgPath):
+  #   imgPaths = du.GetImgPaths(imgPath)
+  #   if len(imgPaths) > 100:
+  #     du.imread(imgPaths[0])
+  #     imgs = du.ParforT(du.imread, imgPaths)
+  #   else:
+  #     imgs = du.For(du.imread, imgPaths)
+  # else:
+  #   imgs = None
+
+
+  # three cases
+  #   se2, se3 + draw2d, se3
   if o.lie == 'se2':
+    imgPath = f'{args.datasetPath}/imgs'
+    if isdir(imgPath): imgs = getImgs(imgPath)
+    else: imgs = None
+
     scenes_or_none = drawSED.draw(o, y=y, x=x, theta=theta, E=E, img=imgs, z=z,
       filename=fnames)
-  else:
-    # don't use SED.draw save ability because we want to adjust the camera of
-    # each scene dependent on all others
-    scenes_or_none = drawSED.draw(o, y=y, x=x, theta=theta, E=E, img=imgs, z=z)
+    if not args.save: plt.show()
 
-  if o.lie == 'se3':
-    scenes = scenes_or_none
+  elif o.lie == 'se3' and not args.draw_3d_as_2d:
+    scenes = drawSED.draw(o, y=y, x=x, theta=theta, E=E, z=z)
     transform = tmu.CameraFromScenes(scenes)
 
+    # set transform as 1.25 of min z. This is specific to se3_marmoset for now
+    #   multiply instead of divide because maybe camera is looking backwards?
     for scene in scenes:
       transform_t = scene.camera.transform.copy()
-      # set transform as 1.25 of min z. This is specific to se3_marmoset for now
-      #   multiply instead of divide because maybe camera is looking backwards?
       transform_t[2,3] = transform[2,3] * 1.25
       scene.camera.transform = transform_t
 
-  if not args.save:
-    if o.lie == 'se3':
-      for t in range(T): scenes[t].show()
+    if args.save:
+      for t in range(T): tmu.save_render(scenes[t], fnames[t])
     else:
-      plt.show()
-  elif args.save and o.lie == 'se3':
-    # save renders with common camera
+      for t in range(T): scenes[t].show()
+
+  elif o.lie == 'se3' and args.draw_3d_as_2d:
+    imgPath = f'{args.datasetPath}/rgb'
+    assert isdir(imgPath)
+    imgs = getImgs(imgPath)
+
+    yImg = [ ]
+
     for t in range(T):
-      tmu.save_render(scenes[t], fnames[t])
+      mask = data['mask'][t]
+
+      # get ordered image indices
+      h, w = imgs[0].shape[:2]
+      yy, xx = np.meshgrid(range(h), range(w), indexing='ij')
+      xy = np.stack((xx.flatten(),yy.flatten()), axis=1) # N x 2
+      xyFG = xy[mask.flatten()]
+      idx_t = data['idx'][t] # indexes into xy
+
+      if subsetIdx is not None and args.no_resampleZ:
+        subsetIdx_t = subsetIdx[t]
+        idx_t = idx_t[subsetIdx_t]
+      xyFG = xyFG[ idx_t ]
+      yImg.append(xyFG)
+    
+    # make fake options with se2 for display
+    oImg = SED.opts(lie='se2')
+    drawSED.draw(oImg, y=yImg, z=z, img=imgs, filename=fnames)
+    if not args.save: plt.show()
 
 
 if __name__ == "__main__":
@@ -90,6 +143,8 @@ if __name__ == "__main__":
     help="don't resample z")
   parser.add_argument('--maxZ', action='store_true',
     help="Take argmax assignments")
+  parser.add_argument('--draw_3d_as_2d', action='store_true',
+    help="Draw 3d on image")
   parser.add_argument('--save', type=str, default='',
     help="Save plots to directory given by argument; draw to screen if empty")
   parser.set_defaults(func=main)
