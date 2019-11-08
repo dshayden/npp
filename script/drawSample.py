@@ -9,9 +9,15 @@ def main(args):
   yAll = data['y']
 
   samples = du.GetFilePaths(f'{args.resultPath}', 'gz')
-  o, alpha, z, pi, theta, E, S, x, Q, mL, ll, subsetIdx, dataset = \
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, dataset = \
     SED.loadSample(samples[args.sampleIdx])
+
   T = len(z)
+  K = theta.shape[1]
+  
+  for t in range(T):
+    for k in range(K):
+      theta[t,k] = omega[k] @ theta[t,k]
 
   if args.no_resampleZ:
     if subsetIdx is not None:

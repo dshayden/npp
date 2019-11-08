@@ -3,9 +3,8 @@ import argparse
 import du, du.stats
 import lie
 from npp import SED, drawSED, icp
-from tqdm import tqdm
 import os
-import IPython as ip
+import IPython as ip, sys
 
 def main(args):
   data = du.load(f'{args.dataset_path}/data')
@@ -32,17 +31,22 @@ def main(args):
   )
   x_ = SED.initXDataMeans(o, y)
   Q = SED.inferQ(o, x_)
-  theta_, E, S, z, pi = SED.initPartsAndAssoc(o, y[:1], x_, args.alpha, mL,
+
+  if args.tInit == -1: tInit = np.random.choice(range(T))
+  else: tInit = args.tInit
+
+  # ip.embed()
+  theta_, E, S, z, pi = SED.initPartsAndAssoc(o, y[tInit:tInit+1], x_, args.alpha, mL,
     maxBreaks=args.maxBreaks, nInit=args.nInit, nIter=args.nIter,
-    tInit=args.tInit, fixedBreaks=args.fixedBreaks
+    tInit=0, fixedBreaks=args.fixedBreaks
   )
   K = len(pi) - 1
 
   # get parts and global for all time
   theta = np.zeros((T, K) + o.dxGm)
-  theta[0] = theta_[0]
+  theta[tInit] = theta_[0]
   x = np.zeros((T,) + o.dxGm)
-  x[0] = x_[0]
+  x[tInit] = x_[0]
 
   m = getattr(lie, o.lie)
 
@@ -66,15 +70,34 @@ def main(args):
     S_t = icp.optimize_local(o, yNext, xNext, thetaPrev, E, S)
     for k in range(K): theta[tNext,k] = theta[tPrev,k] @ S_t[k]
 
-  # iterate through t, t+1 to get x, theta estimates
-  du.tic()
-  for tPrev, tNext in zip(ts[:-1], ts[1:]):
+  # reverse direction
+  # for (tInit, tInit-1) ... (1, 0)
+  for tPrev, tNext in zip(reversed(ts[:tInit]), reversed(ts[1:tInit+1])):
+    print(f'Optimizing Global then Local from time {tNext:03} to {tPrev:03}. ' + \
+      f'Elapsed: {du.toc():.2f} seconds')
+    estimate_global_then_parts(tNext, tPrev)
+
+  # forward direction
+  for tPrev, tNext in zip(ts[tInit:-1], ts[tInit+1:]):
     print(f'Optimizing Global then Local from time {tPrev:03} to {tNext:03}. ' + \
       f'Elapsed: {du.toc():.2f} seconds')
     estimate_global_then_parts(tPrev, tNext)
 
-  # Specially handle t=0
-  estimate_global_then_parts(0, 0)
+  print(f'Optimizing Global then Local for time {tInit:03}. ' + \
+    f'Elapsed: {du.toc():.2f} seconds')
+  if tInit > 0: estimate_global_then_parts(tInit-1, tInit)
+  else: estimate_global_then_parts(0, 0)
+
+  # # for (tInit, tInit-1) ... (T-1, T)
+  # # re-estimate tInit from either direction
+  # # iterate through t, t+1 to get x, theta estimates
+  # du.tic()
+  # for tPrev, tNext in zip(ts[:-1], ts[1:]):
+  #   print(f'Optimizing Global then Local from time {tPrev:03} to {tNext:03}. ' + \
+  #     f'Elapsed: {du.toc():.2f} seconds')
+  #   estimate_global_then_parts(tPrev, tNext)
+  # # Specially handle t=0
+  # estimate_global_then_parts(0, 0)
 
   # Re-estimate z, pi; remove unused parts (if any)
   z = [ [] for t in range(T) ]
@@ -82,18 +105,27 @@ def main(args):
     z[t] = SED.inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
   z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, args.alpha,
     theta, E, S)
-  
+
+  # compute omega
+  omega = np.stack([ m.karcher(theta[:,k]) for k in range(K) ])
+  omegaInv = [ m.inv(omega[k]) for k in range(K) ]
+
+  for t in range(T):
+    for k in range(K):
+      theta[t,k] = omegaInv[k] @ theta[t,k]
+
   # Re-estimate Q, S, E
   Q = SED.inferQ(o, x)
   if K > 0: S = np.array([ SED.inferSk(o, theta[:,k]) for k in range(K) ])
   else: S = np.zeros((0, o.dxA, o.dxA))
-  E = SED.inferE(o, x, theta, y, z)
+  # E = SED.inferE(o, x, theta, y, z)
+  E = SED.inferE(o, x, theta, omega, y, z)
 
   # Compute log-likelihood
-  ll = SED.logJoint(o, y, z, x, theta, E, S, Q, args.alpha, pi, mL)
+  ll = SED.logJoint(o, y, z, x, theta, E, S, Q, args.alpha, pi, omega, mL)
 
   # Save results
-  SED.saveSample(args.outfile, o, args.alpha, z, pi, theta, E, S, x, Q, mL, ll,
+  SED.saveSample(args.outfile, o, args.alpha, z, pi, theta, E, S, x, Q, omega, mL, ll,
     subsetIdx, args.dataset_path)
 
   # drawSED.draw(o, y=y, z=z, x=x, theta=theta, E=E)

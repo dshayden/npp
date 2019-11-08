@@ -279,6 +279,7 @@ def draw(o, **kwargs):
     style: string for modifying plot style. One of [None, 'mot_wind']
     no_parallel (bool): don't use parfor
     img (list of ndarray, [nY, nX, 3]): images to draw on
+    reverseY (bool): reverse y axis orientation
   """
   # time-varying
   y = kwargs.get('y', None)
@@ -291,6 +292,7 @@ def draw(o, **kwargs):
   no_parallel = kwargs.get('no_parallel', False)
   no_extents = kwargs.get('no_extents', False)
   img = kwargs.get('img', None)
+  reverseY = kwargs.get('reverseY', False)
 
   if x is None and y is None: return
 
@@ -331,7 +333,8 @@ def draw(o, **kwargs):
   if filename is None and o.lie == 'se2':
     def _draw_t(t):
       draw_t(o, x=x[t], theta=theta[t], y=y[t], title=title[t], z=z[t],
-        img=img[t], zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
+        img=img[t], zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style,
+        reverseY=reverseY)
     du.ViewPlots(range(T), _draw_t)
   elif filename is None and o.lie == 'se3':
     def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, style):
@@ -365,7 +368,7 @@ def draw(o, **kwargs):
       #   xlim=xlim, ylim=ylim, filename=filename, style=style)
 
       draw_t(o, x=x, theta=theta, y=y, title=title, z=z, img=img, zCols=zCols, E=E,
-        xlim=xlim, ylim=ylim, filename=filename, style=style)
+        xlim=xlim, ylim=ylim, filename=filename, style=style, reverseY=reverseY)
 
     pArgs = [ (o, x[t], theta[t], y[t], title[t], z[t], img[t], zCols, E, xlim,
       ylim, filename[t], style) for t in range(T) ]

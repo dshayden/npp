@@ -267,7 +267,9 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
 
   # infer S, E
   S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
-  E = inferE(o, x, theta, y, z)
+
+  omega = np.tile(np.eye(o.dy+1), (K, 1, 1))
+  E = inferE(o, x, theta, omega, y, z)
 
   # have to do this after E, S because they don't exist yet
   z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
@@ -415,7 +417,7 @@ def logpdf_theta_tk(o, theta_tk, theta_tminus1_k, Sk):
   '''
   return mvnL_logpdf(o, theta_tk, theta_tminus1_k, Sk)
 
-def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
+def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL=None):
   r''' Calculate joint log-likelihood of below:
 
       p(y, z, x, theta, E, S, Q, pi | H_*, alpha)
@@ -449,11 +451,23 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
 
   # time-dependent
   ## y | z, theta, x, E
-  ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
-    for t in range(T) ])
+  if omega is None:
+    ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
+      for t in range(T) ])
+  else:
+    # make simulated parts
+    for t in range(T):
+      theta_t = np.stack([ omega[k] @ theta[t,k] for k in range(K) ])
+      ll += np.sum(logpdf_data_t(o, y[t], z[t], x[t], theta_t, E, mL[t]))
   
+  if omega is not None:
+    I = np.eye(o.dy+1)
+    cov = 1e6 * np.eye(o.dxA)
+    ll += np.sum( [ mvnL_logpdf(o, omega[k], I, cov) for k in range(K) ] )
+
   ## x | Q, H_x
   ll += logpdf_x_t(o, x[1], o.H_x[1], o.H_x[2])
+
   ll += np.sum( [logpdf_x_t(o, x[t], x[t-1], Q) for t in range(1,T)] )
 
   ## theta | S, H_theta
@@ -464,398 +478,1047 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL=None):
 
   return ll
 
-def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
-  r''' Sample translation component d_x_t of x_t, allowing for correlation.
+# def sampleTranslationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
+#   r''' Sample translation component d_x_t of x_t, allowing for correlation.
+#
+#   INPUT
+#     o (argparse.Namespace): Algorithm options
+#     y_t (ndarray, [N_t, dy]): Observations at time t
+#     z_t (ndarray, [N_t,]): Associations at time t
+#     x_t (ndarray, dxGm): Current global latent dynamic, time t
+#     theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
+#     E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
+#     Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
+#     x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
+#
+#   KEYWORD INPUTS
+#     x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
+#     Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
+#     returnMuSigma (bool): Return mu, Sigma rather than sample
+#
+#   OUTPUT
+#     d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
+#   '''
+#   m = getattr(lie, o.lie)
+#   K = theta_t.shape[0]
+#
+#   # Are we sampling from forward filter (past only) or full conditional?
+#   x_tplus1 = kwargs.get('x_tplus1', None)
+#   if x_tplus1 is None: noFuture = True
+#   else: noFuture = False
+#
+#   # Check if we have different Q_tminus1, Q_tplus1
+#   Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
+#
+#   # Separate R, d; get H, x2, b
+#   R_x_t, _ = m.Rt(x_t)
+#   R_x_tminus1, d_x_tminus1 = m.Rt(x_tminus1)
+#
+#   V_x_tminus1_x_t_inv, x2 = m.getVi(m.inv(x_tminus1).dot(x_t), return_phi=True)
+#   if o.lie == 'se2': x2 = np.array([x2])
+#   H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
+#   b = -H.dot(d_x_tminus1)
+#   u = np.zeros(o.dxA)
+#
+#   if not noFuture:
+#     R_x_tplus1, d_x_tplus1 = m.Rt(x_tplus1)
+#     V_x_t_x_tplus1_inv, x2_ = m.getVi(m.inv(x_t).dot(x_tplus1), return_phi=True)
+#     if o.lie == 'se2': x2_ = np.array([x2_])
+#
+#     H_ = -V_x_t_x_tplus1_inv.dot(R_x_t.T)
+#     b_ = -H_.dot(d_x_tplus1)
+#     u_ = np.zeros(o.dxA)
+#
+#     mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, Q_tminus1,
+#       x2_, H_, b_, u_, Q_tplus1)
+#   else:
+#     mu, Sigma = inferNormalConditional(x2, H, b, u, Q_tminus1)
+#
+#   Sigma_inv = np.linalg.inv(Sigma)
+#   for k in range(K):
+#     # if not isObserved[k]: continue
+#     R_theta_tk, d_theta_tk = m.Rt(theta_t[k])
+#     R2 = R_x_t.dot(R_theta_tk)
+#     obsCov = R2.dot(E[k]).dot(R2.T)
+#     obsCov_inv = R2.dot(np.linalg.inv(E[k])).dot(R2.T)
+#     bias = R_x_t.dot(d_theta_tk)
+#
+#     z_tk = z_t == k
+#     Nk = np.sum(z_tk)
+#     if Nk == 0: continue
+#     SigmaNew_inv = Sigma_inv + Nk*obsCov_inv
+#     SigmaNew = np.linalg.inv(SigmaNew_inv)
+#     muNew = SigmaNew.dot( Sigma_inv.dot(mu) + obsCov_inv.dot(
+#       np.sum(y_t[z_tk], axis=0) - Nk*bias)
+#     )
+#     mu, Sigma, Sigma_inv = (muNew, SigmaNew, SigmaNew_inv)
+#
+#   if kwargs.get('returnMuSigma', False): return mu, Sigma
+#   else: return mvn.rvs(mu, Sigma)
+
+def translationObservationPosterior(o, ys, R_U, lhs, rhs, E, mu, Sigma):
+  r''' Compute Gaussian posterior on translation d_U for given observation model
+
+  This function assumes the following observation model (where points are
+  interchangeably viewed in homogenous coordinates or not for simplicity):
+
+    \prod_n
+    N( ys[n] | lhs * U * rhs * 0, (lhs * U * rhs) * E * (lhs * U * rhs)^T )
+
+  = \prod_n
+    N( lhs^{-1} ys[n] | U * rhs * 0, (U * rhs) * E * (U * rhs)^T )
+
+  = \prod_n
+    N( lhs^{-1} ys[n] | U * phi, (U * rhs) * E * (U * rhs)^T )
+  
+  ( for phi = lhs * 0 )
+
+  = \prod_n
+    N( lhs^{-1} ys[n] | d_U + R_U phi, (U * rhs) * E * (U * rhs)^T )
+
+  ( for SE(D) transformation U = (R_U, d_U) )
+
+  Given prior mu, Sigma on dU, this is a linear Gaussian system with bias
+  parameter R_U * phi.
 
   INPUT
     o (argparse.Namespace): Algorithm options
-    y_t (ndarray, [N_t, dy]): Observations at time t
-    z_t (ndarray, [N_t,]): Associations at time t
-    x_t (ndarray, dxGm): Current global latent dynamic, time t
-    theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
-    E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
-    Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
-    x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
-
-  KEYWORD INPUTS
-    x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
-    Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
-    returnMuSigma (bool): Return mu, Sigma rather than sample
+    ys (ndarray, [N, dy]): Set of observations
+    R_U (ndarray, [dy, dy]): Rotation component of U
+    lhs (ndarray, dxGm): Global transformation to the left of U
+    rhs (ndarray, dxGm): Global transformation to the right of U
+    E (ndarray, [dy, dy]): Part Local Observation Noise Covs
+    mu (ndarray, [dy,]): Prior mean of d_U, the translation of U
+    Sigma (ndarray, [dy, dy]): Prior covariance of d_U, the translation of U
 
   OUTPUT
-    d_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
+    mu (ndarray, [dy,]): Posterior mean of d_U, the translation of U
+    Sigma (ndarray, [dy, dy]): Posterior covariance of d_U, the translation of U
   '''
   m = getattr(lie, o.lie)
-  K = theta_t.shape[0]
+  ys = np.atleast_2d(ys)
+  N = ys.shape[0]
+  if N == 0: return mu, Sigma
 
-  # Are we sampling from forward filter (past only) or full conditional?
-  x_tplus1 = kwargs.get('x_tplus1', None)
-  if x_tplus1 is None: noFuture = True
-  else: noFuture = False
+  zero = np.zeros(o.dy)
+  y_lhs = TransformPointsNonHomog(m.inv(lhs), ys)
+  phi = TransformPointsNonHomog(rhs, zero)
+  bias = TransformPointsNonHomog(MakeRd(R_U, zero), phi)
 
-  # Check if we have different Q_tminus1, Q_tplus1
-  Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
-
-  # Separate R, d; get H, x2, b
-  R_x_t, _ = m.Rt(x_t)
-  R_x_tminus1, d_x_tminus1 = m.Rt(x_tminus1)
-
-  V_x_tminus1_x_t_inv, x2 = m.getVi(m.inv(x_tminus1).dot(x_t), return_phi=True)
-  if o.lie == 'se2': x2 = np.array([x2])
-  H = V_x_tminus1_x_t_inv.dot(R_x_tminus1.T)
-  b = -H.dot(d_x_tminus1)
-  u = np.zeros(o.dxA)
-
-  if not noFuture:
-    R_x_tplus1, d_x_tplus1 = m.Rt(x_tplus1)
-    V_x_t_x_tplus1_inv, x2_ = m.getVi(m.inv(x_t).dot(x_tplus1), return_phi=True)
-    if o.lie == 'se2': x2_ = np.array([x2_])
-
-    H_ = -V_x_t_x_tplus1_inv.dot(R_x_t.T)
-    b_ = -H_.dot(d_x_tplus1)
-    u_ = np.zeros(o.dxA)
-
-    mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, Q_tminus1,
-      x2_, H_, b_, u_, Q_tplus1)
-  else:
-    mu, Sigma = inferNormalConditional(x2, H, b, u, Q_tminus1)
+  R_rhs, _ = m.Rt(rhs)
+  R2 = R_U @ R_rhs
+  obsCov = R2 @ E @ R2.T
+  E_inv = np.diag(1. / np.diag(E))
+  obsCov_inv = R2 @ E_inv @ R2.T
 
   Sigma_inv = np.linalg.inv(Sigma)
-  for k in range(K):
-    # if not isObserved[k]: continue
-    R_theta_tk, d_theta_tk = m.Rt(theta_t[k])
-    R2 = R_x_t.dot(R_theta_tk)
-    obsCov = R2.dot(E[k]).dot(R2.T)
-    obsCov_inv = R2.dot(np.linalg.inv(E[k])).dot(R2.T)
-    bias = R_x_t.dot(d_theta_tk)
+  SigmaNew_inv = Sigma_inv + N * obsCov_inv
+  SigmaNew = np.linalg.inv(SigmaNew_inv)
+  muNew = SigmaNew.dot( Sigma_inv.dot(mu) + obsCov_inv.dot(
+    np.sum(y_lhs, axis=0) - N*bias)
+  )
 
-    z_tk = z_t == k
-    Nk = np.sum(z_tk)
-    if Nk == 0: continue
-    SigmaNew_inv = Sigma_inv + Nk*obsCov_inv
-    SigmaNew = np.linalg.inv(SigmaNew_inv)
-    muNew = SigmaNew.dot( Sigma_inv.dot(mu) + obsCov_inv.dot(
-      np.sum(y_t[z_tk], axis=0) - Nk*bias)
-    )
-    mu, Sigma, Sigma_inv = (muNew, SigmaNew, SigmaNew_inv)
+  return muNew, SigmaNew
 
-  if kwargs.get('returnMuSigma', False): return mu, Sigma
-  else: return mvn.rvs(mu, Sigma)
+# def sampleThetaTranslation(o, R_cur, thetaPrev, S_prev, omega, lam, **kwargs):
+#   m = getattr(lie, o.lie)
+#   if o.lie == 'se2': mRot = lie.so2
+#   else: mRot = lie.so3
+#
+#   R_prev, d_prev = m.Rt(thetaPrev)
+#   R_omega, d_omega = m.Rt(omega)
+#
+#   thetaNext = kwargs.get('thetaNext', None)
+#   if thetaNext is not None:
+#     useFuture = True
+#     R_next, d_next = m.Rt(thetaNext)
+#     S_next = kwargs.get('S_next', None)
+#     if S_next is None: S_next = S_prev
+#   else:
+#     useFuture = False
+#   
+#   # conditional of first term
+#   R_e = mRot.expm(-lam * mRot.logm(R_prev.T @ R_omega))
+#   V_e = np.linalg.inv(m.getVi(R_e))
+#   Vi_prev_inv_omega = m.getVi(R_prev.T @ R_omega)
+#
+#   R_f = R_e @ R_prev.T @ R_cur
+#   Vi_f = m.getVi(R_f)
+#   phi = mRot.algi(mRot.logm(R_f))
+#   if o.lie == 'se2': phi = np.array([phi])
+#
+#   H = Vi_f @ R_e @ R_prev.T
+#   b = -Vi_f @ R_e @ R_prev.T @ d_prev - lam * (
+#     Vi_f @ V_e @ Vi_prev_inv_omega @ R_prev.T @ (d_omega - d_prev)
+#   )
+#   u = np.zeros(o.dxA)
+#
+#   if useFuture:
+#     R_e_ = mRot.expm(-lam * mRot.logm(R_cur.T @ R_omega))
+#     V_e_ = np.linalg.inv(m.getVi(R_e))
+#     Vi_cur_inv_omega_ = m.getVi(R_cur.T @ R_omega)
+#
+#     R_f_ = R_e @ R_cur.T @ R_next
+#     Vi_f_ = m.getVi(R_f)
+#     phi_ = mRot.algi(mRot.logm(R_f))
+#     if o.lie == 'se2': phi_ = np.array([phi_])
+#     u_ = u
+#
+#     H_ = lam * V_e_ @ Vi_cur_inv_omega_ @ R_cur.T - Vi_f_ @ R_e_ @ R_cur.T
+#     b_ = Vi_f_ @ R_e_ @ R_cur.T @ d_next - lam * (
+#       V_e_ @ Vi_cur_inv_omega_ @ R_cur.T @ d_omega
+#     )
+#
+#     # ip.embed()
+#     mu, Sigma = inferNormalConditionalNormal(phi, H, b, u, S_prev, phi_, H_, b_,
+#       u_, S_next)
+#   else:
+#     mu, Sigma = inferNormalConditional(phi, H, b, u, S_prev)
+#
+#   return mu, Sigma
 
-def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
-  r''' Sample translation component d_theta_tk of theta_tk
+# def sampleOmegaTranslation(o, theta_k, S_k, R_omega_k, lam, **kwargs):
+#   m = getattr(lie, o.lie)
+#   if o.lie == 'se2':
+#     W = np.diag([1000, 1000, 4*np.pi])
+#     mRot = lie.so2
+#   else:
+#     W = np.diag([1000, 1000, 1000, 4*np.pi, 4*np.pi, 4*np.pi])
+#     mRot = lie.so3
+#
+#   # omega prior
+#   Vi_prior, phi = m.getVi(R_omega_k, return_phi=True)
+#   if o.lie == 'se2': phi = np.array([phi])
+#
+#   H = Vi_prior
+#   b = np.zeros(o.dy)
+#   u = np.zeros(o.dxA)
+#   mu, Sigma = inferNormalConditional(phi, H, b, u, W)
+#
+#   # omega likelihood
+#   T = len(theta_k)
+#   for t in range(1, T):
+#     R_prev, d_prev = m.Rt(theta_k[t-1])
+#     R_cur, d_cur = m.Rt(theta_k[t])
+#
+#     R_e = mRot.expm(-lam * mRot.logm(R_prev.T @ R_omega_k))
+#
+#     V_e = np.linalg.inv(m.getVi(R_e))
+#     Vi_prev_inv_omega = m.getVi(R_prev.T @ R_omega_k)
+#
+#     R_f = R_e @ R_prev.T @ R_cur
+#     Vi_f = m.getVi(R_f)
+#
+#     phi = mRot.algi(mRot.logm(R_f))
+#     if o.lie == 'se2': phi = np.array([phi])
+#
+#     H = -lam * Vi_f @ V_e @ Vi_prev_inv_omega @ R_prev.T
+#     b = Vi_f @ R_e @ R_prev.T @ (d_cur - d_prev) + lam * (
+#       Vi_f @ V_e @ Vi_prev_inv_omega @ R_prev.T @ d_prev
+#     )
+#
+#     muTerm, SigmaTerm = inferNormalConditional(phi, H, b, u, S_k)
+#     obs = muTerm
+#     Sigma_inv = np.linalg.inv(Sigma)
+#     SigmaTerm_inv = np.linalg.inv(SigmaTerm)
+#
+#     SigmaNew_inv = Sigma_inv + SigmaTerm_inv
+#     Sigma = np.linalg.inv(SigmaNew_inv)
+#     mu = Sigma @ ( Sigma_inv @ mu + SigmaTerm_inv @ obs )
+#
+#   return mu, Sigma
+
+# def sampleOmegaTranslation(o, theta_k, S_k, R_omega_k, lam, **kwargs):
+#   m = getattr(lie, o.lie)
+#   if o.lie == 'se2':
+#     W = np.diag([1000, 1000, 4*np.pi])
+#     mRot = lie.so2
+#   else:
+#     W = np.diag([1000, 1000, 1000, 4*np.pi, 4*np.pi, 4*np.pi])
+#     mRot = lie.so3
+#
+#   # get mu, Sigma of d_w | phi_w
+#   phi = mRot.algi(mRot.logm(R_omega_k))
+#   if o.lie == 'se2': phi = np.array([phi])
+#
+#   H = np.eye(o.dy)
+#   b = np.zeros(o.dy)
+#   u = np.zeros(o.dxA)
+#   mu, Sigma = inferNormalConditional(phi, H, b, u, W)
+#
+#   # incorporate parts
+#   T = len(theta_k)
+#   for t in range(1, T):
+#     R_prev, d_prev = m.Rt(theta_k[t-1])
+#     R_cur, d_cur = m.Rt(theta_k[t])
+#
+#     expTerm = mRot.expm(-lam * mRot.logm(R_prev.T @ R_omega_k))
+#     phi = mRot.algi(mRot.logm(expTerm @ R_prev.T @ R_cur))
+#     if o.lie == 'se2': phi = np.array([phi])
+#
+#     H = -lam * R_prev.T
+#     b = expTerm @ R_prev.T @ (d_cur - d_prev) + lam * R_prev.T @ d_prev
+#
+#     # ip.embed()
+#     muTerm, SigmaTerm = inferNormalConditional(phi, H, b, u, S_k)
+#
+#     obs = muTerm
+#
+#     Sigma_inv = np.linalg.inv(Sigma)
+#     SigmaTerm_inv = np.linalg.inv(SigmaTerm)
+#
+#     SigmaNew_inv = Sigma_inv + SigmaTerm_inv
+#     Sigma = np.linalg.inv(SigmaNew_inv)
+#     mu = Sigma @ ( Sigma_inv @ mu + SigmaTerm_inv @ obs )
+#   
+#   return mu, Sigma
+
+# old non-interp dynamics, but doesn't include alpha, beta stuff
+# def sampleOmega(o, theta_k, S_k, **kwargs):
+#   r''' Sample Canonical part transformation (in interp dynamics) for each part.
+#   '''
+#   m = getattr(lie, o.lie)
+#   lam = kwargs.get('lam', 0.05)
+#
+#   # Initialize with Karcher mean
+#   w0 = m.algi(m.logm(m.karcher(theta_k)))
+#
+#   # Prior and proposal covariances, todo: encode in model
+#   if o.lie == 'se2':
+#     W = np.diag([10000, 10000, 4*np.pi])
+#     Sigma = np.diag([1, 1, 0.05])
+#   else:
+#     W = np.diag([10000, 10000, 10000, 4*np.pi, 4*np.pi, 4*np.pi])
+#     Sigma = np.diag([1, 1, 1, 0.05, 0.05, 0.05])
+#   zero = np.zeros(o.dxA)
+#
+#   nSamples = kwargs.get('nSamples', 1000)
+#   samples = np.zeros((nSamples, o.dxA))
+#   samples[0] = w0
+#   ll = np.zeros(nSamples)
+#   ll[0] = omegaObjective(o, theta_k, S_k, W, lam, samples[0])
+#   accepts = np.zeros((nSamples), dtype=np.bool)
+#   accepts[0] = True
+#
+#   for nS in range(1, nSamples):
+#     gamma = mvn.rvs(zero, Sigma)
+#     wProp = samples[nS-1] + gamma
+#     llProp = omegaObjective(o, theta_k, S_k, W, lam, wProp)
+#     logA = llProp - ll[nS-1]
+#     if logA >= 0 or np.random.rand() < np.exp(logA):
+#       samples[nS] = wProp 
+#       ll[nS] = llProp
+#       accepts[nS] = True
+#     else:
+#       samples[nS] = samples[nS-1]
+#       ll[nS] = ll[nS-1]
+#
+#   if kwargs.get('debug', False):
+#     return samples, ll, accepts
+#   else:
+#     return samples[-1]
+
+def sampleOmega(o, y, z, x, theta, E, R_omega):
+  r''' Sample Canonical part transformation for each part.
 
   INPUT
-     (argparse.Namespace): Algorithm options
-    y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
-    theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
-    x_t (ndarray, dxGm): Current global latent dynamic, time t
-    S_tminus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov 
-    E_k (ndarray, [dy, dy]): Part k Extent
-    theta_tminus1_k (ndarray, dxGm): Global latent dynamic, time t-1
-
-  KEYWORD INPUTS
-    theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
-    S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
-    returnMuSigma (bool): Return mu, Sigma rather than sample
+    R_omega (ndarray, [K, dy, dy]): Initial omega rotations
 
   OUTPUT
-    d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
+    omega (ndarray, [K, dxGm]): Resampled omega
+  '''
+  T, K = theta.shape[:2]
+
+  # prior parameters; todo: set into opts
+  prevU = np.eye(o.dy+1)
+  prevS = 1e6 * np.eye(o.dxA)
+
+  omega = np.zeros((K,) + o.dxGm)
+
+  for k in range(K):
+    # sample translation
+
+    ## dynamics from prior
+    mu, Sigma = translationDynamicsPosterior(o, R_omega[k], prevU, prevS)
+
+    ## observations across time
+    y_ks = tuple( y[t][z[t]==k] for t in range(T) )
+    lhs = tuple( x[t] for t in range(T) )
+    rhs = tuple( theta[t,k] for t in range(T) )
+    for t in range(T):
+      mu, Sigma = translationObservationPosterior(o, y_ks[t], R_omega[k],
+        lhs[t], rhs[t], E[k], mu, Sigma)
+    d_omega_k = mvn.rvs(mu, Sigma)
+
+    # sample rotation
+    E_k = ( E[k], ) * T
+    R_omega_k = sampleRotation(o, y_ks, d_omega_k, lhs, rhs, E_k, prevU, prevS)
+
+    omega[k] = MakeRd(R_omega_k, d_omega_k)
+
+  return omega
+
+def thetaTranslationDynamicsPosterior(o, R_U, prevU, prevS, A, B, **kwargs): 
+  m = getattr(lie, o.lie)
+  if o.lie == 'se2': mRot = lie.so2
+  else: mRot = lie.so3
+
+  zero, eye = ( np.zeros(o.dy), np.eye(o.dy) )
+
+  # handle previous
+  ## Get p( V^{-1} d_{theta_tk} | R_{theta_tk} )
+  R_prev, d_prev = m.Rt(prevU)
+
+  # new
+  H = B
+  b = A @ d_prev
+  phi = np.atleast_1d(mRot.algi(mRot.logm(R_prev.T @ R_U)))
+
+  jointMu = np.concatenate(( b, np.zeros(o.dxA - o.dy) ))
+  jointSigma = prevS.copy() # 22 stays the same
+  jointSigma[:o.dy,:o.dy] = H @ jointSigma[:o.dy,:o.dy] @ H.T # 11
+  jointSigma[:o.dy,o.dy:] = H @ jointSigma[:o.dy,o.dy:] # 12
+  jointSigma[o.dy:,:o.dy] = jointSigma[:o.dy,o.dy:].T # 21
+
+  # prior on d_theta_tk
+  mu, Sigma = inferNormalConditional(phi, eye, zero,
+    jointMu, jointSigma)
+
+  # handle future or return
+  nextU = kwargs.get('nextU', None)
+  if nextU is None: return mu, Sigma
+  R_nextU, d_nextU = m.Rt(nextU)
+  nextS = kwargs.get('nextS', None)
+  if nextS is None: nextS = prevS
+
+  Ai = np.linalg.inv(A)
+  H = -Ai @ B
+  b = Ai @ d_nextU
+
+  _, phi = m.getVi(R_U.T @ R_nextU, return_phi=True)
+  if o.lie == 'se2': phi = np.array([phi])
+
+  jointMu = np.concatenate((
+    b,
+    np.zeros(o.dxA - o.dy)
+  ))
+  jointSigma = nextS.copy() # 22 stays the same
+  jointSigma[:o.dy,:o.dy] = H @ jointSigma[:o.dy,:o.dy] @ H.T # 11
+  jointSigma[:o.dy,o.dy:] = H @ jointSigma[:o.dy,o.dy:] # 12
+  jointSigma[o.dy:,:o.dy] = jointSigma[:o.dy,o.dy:].T # 21
+
+  # treat this conditional mu as an observation of d_theta_tk with observation
+  # covariance Sigma_
+  obs, Sigma_ = inferNormalConditional(phi, eye, zero,
+    jointMu, jointSigma)
+
+  # combine prior and observation
+  mu, Sigma = inferNormalNormal(obs, Sigma_, mu, Sigma)
+  return mu, Sigma
+
+def translationDynamicsPosterior(o, R_U, prevU, prevS, **kwargs):
+  r''' Compute Gaussian posterior on translation d_U for given dynamics model
+
+  This function assumes the following dynamics model
+
+    p(d_U | R_U) \propto N_L(U | prevU, prevS) * N_L(nextU | U, nextS)
+
+  ( for SE(D) transformation U = (R_U, d_U) )
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    R_U (ndarray, [dy, dy]): Rotation component of U
+    prevU (ndarray, [dxGm]): Previous dynamics
+    prevS (ndarray, [dxA, dxA]): Previous dynamics covariance
+
+  Keywords
+    nextU (ndarray, [dxGm]): Next dynamics
+    nextS (ndarray, [dxA, dxA]): Next dynamics covariance
+
+  OUTPUT
+    mu (ndarray, [dy,]): Posterior mean of d_U, the translation of U
+    Sigma (ndarray, [dy, dy]): Posterior covariance of d_U, the translation of U
   '''
   m = getattr(lie, o.lie)
+  R_prevU, d_prevU = m.Rt(prevU)
 
-  # Are we sampling from forward filter (past only) or full conditional?
-  theta_tplus1_k = kwargs.get('theta_tplus1_k', None)
-  if theta_tplus1_k is None: noFuture = True
-  else: noFuture = False
+  nextU = kwargs.get('nextU', None)
+  if nextU is not None:
+    useFuture = True
+    R_nextU, d_nextU = m.Rt(nextU)
+    nextS = kwargs.get('nextS', None)
+    if nextS is None: nextS = prevS
 
-  # Check if we have different S_tminus1_k, S_tplus1_k
-  S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
+  else:
+    useFuture = False
 
-  # Separate R, d
-  R_x_t, d_x_t = m.Rt(x_t)
-  R_theta_tk, _ = m.Rt(theta_tk)
-  R_theta_tminus1_k, d_theta_tminus1_k = m.Rt(theta_tminus1_k)
+  # get V^{-1}
+  prevV_inv, phi = m.getVi(R_prevU.T @ R_U, return_phi=True)
+  if o.lie == 'se2': phi = np.array([phi])
 
-  # Get substitutions for prior
-  V_theta_tminus1_k_theta_tk_inv, x2 = m.getVi(
-    m.inv(theta_tminus1_k).dot(theta_tk), return_phi=True)
-  if o.lie == 'se2': x2 = np.array([x2])
-  H = V_theta_tminus1_k_theta_tk_inv.dot(R_theta_tminus1_k.T)
-  b = -H.dot(d_theta_tminus1_k)
+  H = prevV_inv @ R_prevU.T
+  b = -H @ d_prevU
   u = np.zeros(o.dxA)
 
-  if not noFuture:
-    # setup
-    R_theta_tplus1_k, d_theta_tplus1_k = m.Rt(theta_tplus1_k)
-    V_theta_tk_theta_tplus1_k_inv, x2_ = m.getVi(
-      m.inv(theta_tk).dot(theta_tplus1_k), return_phi=True)
-    if o.lie == 'se2': x2_ = np.array([x2_])
-    H_ = -V_theta_tk_theta_tplus1_k_inv.dot(R_theta_tk.T)
-    b_ = -H_.dot(d_theta_tplus1_k)
-    u_ = np.zeros(o.dxA)
-    mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, S_tminus1_k,
-      x2_, H_, b_, u_, S_tplus1_k)
+  if useFuture:
+    nextV_inv, phi_ = m.getVi(R_U.T @ R_nextU, return_phi=True)
+    if o.lie == 'se2': phi_ = np.array([phi_])
+    H_ = -nextV_inv @ R_U.T
+    b_ = -H_ @ d_nextU
+    u_ = u
+    mu, Sigma = inferNormalConditionalNormal(phi, H, b, u, prevS, phi_, H_, b_,
+      u_, nextS)
   else:
-    mu, Sigma = inferNormalConditional(x2, H, b, u, S_tminus1_k)
+    mu, Sigma = inferNormalConditional(phi, H, b, u, prevS)
 
-  Nk = y_tk.shape[0]
-  if Nk > 0:
-    R2 = R_x_t.dot(R_theta_tk)
-    H = R_x_t
-    bias = d_x_t
-    obsCov = R2.dot(E_k).dot(R2.T)
-    obsCov_inv = R2.dot(np.linalg.inv(E_k)).dot(R2.T)
-    
-    Sigma_inv = np.linalg.inv(Sigma)
-    SigmaNew_inv = Sigma_inv + Nk*H.T.dot(obsCov_inv).dot(H)
-    SigmaNew = np.linalg.inv(SigmaNew_inv)
-    muNew = SigmaNew.dot( Sigma_inv.dot(mu) + H.T.dot(obsCov_inv).dot(
-      np.sum(y_tk, axis=0) - Nk*bias)
-    )
-    mu, Sigma = (muNew, SigmaNew)
+  return mu, Sigma
 
-  if kwargs.get('returnMuSigma', False): return mu, Sigma
-  else: return mvn.rvs(mu, Sigma)
 
-def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
-  r''' Sample translation component d_x_t of x_t
+# def sampleTranslationTheta_with_omega(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k,
+#     theta_tminus1_k, omega_k, **kwargs):
+#   r''' Sample translation component d_theta_tk of theta_tk
+#
+#   INPUT
+#      (argparse.Namespace): Algorithm options
+#     y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
+#     theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
+#     x_t (ndarray, dxGm): Current global latent dynamic, time t
+#     S_tminus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov 
+#     E_k (ndarray, [dy, dy]): Part k Extent
+#     theta_tminus1_k (ndarray, dxGm): Global latent dynamic, time t-1
+#     omega_k (ndarray, dxGm): Canonical part transformation
+#
+#   KEYWORD INPUTS
+#     theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
+#     S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
+#     returnMuSigma (bool): Return mu, Sigma rather than sample
+#
+#   OUTPUT
+#     d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
+#   '''
+#   m = getattr(lie, o.lie)
+#
+#   # Are we sampling from forward filter (past only) or full conditional?
+#   theta_tplus1_k = kwargs.get('theta_tplus1_k', None)
+#   if theta_tplus1_k is None: noFuture = True
+#   else: noFuture = False
+#
+#   # Check if we have different S_tminus1_k, S_tplus1_k
+#   S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
+#
+#   # Separate R, d
+#   R_x_t, d_x_t = m.Rt(x_t)
+#   R_theta_tk, _ = m.Rt(theta_tk)
+#   R_theta_tminus1_k, d_theta_tminus1_k = m.Rt(theta_tminus1_k)
+#
+#   # Get substitutions for prior
+#   V_theta_tminus1_k_theta_tk_inv, x2 = m.getVi(
+#     m.inv(theta_tminus1_k).dot(theta_tk), return_phi=True)
+#   if o.lie == 'se2': x2 = np.array([x2])
+#   H = V_theta_tminus1_k_theta_tk_inv.dot(R_theta_tminus1_k.T)
+#   b = -H.dot(d_theta_tminus1_k)
+#   u = np.zeros(o.dxA)
+#
+#   if not noFuture:
+#     # setup
+#     R_theta_tplus1_k, d_theta_tplus1_k = m.Rt(theta_tplus1_k)
+#     V_theta_tk_theta_tplus1_k_inv, x2_ = m.getVi(
+#       m.inv(theta_tk).dot(theta_tplus1_k), return_phi=True)
+#     if o.lie == 'se2': x2_ = np.array([x2_])
+#     H_ = -V_theta_tk_theta_tplus1_k_inv.dot(R_theta_tk.T)
+#     b_ = -H_.dot(d_theta_tplus1_k)
+#     u_ = np.zeros(o.dxA)
+#     mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, S_tminus1_k,
+#       x2_, H_, b_, u_, S_tplus1_k)
+#   else:
+#     mu, Sigma = inferNormalConditional(x2, H, b, u, S_tminus1_k)
+#
+#   Nk = y_tk.shape[0]
+#   if Nk > 0:
+#     y_tkCanonical = TransformPointsNonHomog(m.inv(x_t @ omega_k), y_tk)
+#     R2 = R_theta_tk
+#     H = np.zeros(o.dy)
+#     bias = np.zeros(o.dy)
+#     obsCov = R2.dot(E_k).dot(R2.T)
+#     obsCov_inv = R2.dot(np.linalg.inv(E_k)).dot(R2.T)
+#     
+#     Sigma_inv = np.linalg.inv(Sigma)
+#     SigmaNew_inv = Sigma_inv + Nk*H.T.dot(obsCov_inv).dot(H)
+#     SigmaNew = np.linalg.inv(SigmaNew_inv)
+#     muNew = SigmaNew.dot( Sigma_inv.dot(mu) + H.T.dot(obsCov_inv).dot(
+#       np.sum(y_tkCanonical, axis=0) - Nk*bias)
+#     )
+#     mu, Sigma = (muNew, SigmaNew)
+#
+#   if kwargs.get('returnMuSigma', False): return mu, Sigma
+#   else: return mvn.rvs(mu, Sigma)
 
-  INPUT
-    o (argparse.Namespace): Algorithm options
-    y_t (ndarray, [N_t, dy]): Observations at time t
-    z_t (ndarray, [N_t,]): Associations at time t
-    x_t (ndarray, dxGm): Current global latent dynamic, time t
-    theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
-    E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
-    Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
-    x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
+# def sampleTranslationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
+#   r''' Sample translation component d_theta_tk of theta_tk
+#
+#   INPUT
+#      (argparse.Namespace): Algorithm options
+#     y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
+#     theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
+#     x_t (ndarray, dxGm): Current global latent dynamic, time t
+#     S_tminus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov 
+#     E_k (ndarray, [dy, dy]): Part k Extent
+#     theta_tminus1_k (ndarray, dxGm): Global latent dynamic, time t-1
+#
+#   KEYWORD INPUTS
+#     theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
+#     S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
+#     returnMuSigma (bool): Return mu, Sigma rather than sample
+#
+#   OUTPUT
+#     d_theta_tk (ndarray, [dy,]): Sampled part k translation dynamic, time t
+#   '''
+#   m = getattr(lie, o.lie)
+#
+#   # Are we sampling from forward filter (past only) or full conditional?
+#   theta_tplus1_k = kwargs.get('theta_tplus1_k', None)
+#   if theta_tplus1_k is None: noFuture = True
+#   else: noFuture = False
+#
+#   # Check if we have different S_tminus1_k, S_tplus1_k
+#   S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
+#
+#   # Separate R, d
+#   R_x_t, d_x_t = m.Rt(x_t)
+#   R_theta_tk, _ = m.Rt(theta_tk)
+#   R_theta_tminus1_k, d_theta_tminus1_k = m.Rt(theta_tminus1_k)
+#
+#   # Get substitutions for prior
+#   V_theta_tminus1_k_theta_tk_inv, x2 = m.getVi(
+#     m.inv(theta_tminus1_k).dot(theta_tk), return_phi=True)
+#   if o.lie == 'se2': x2 = np.array([x2])
+#   H = V_theta_tminus1_k_theta_tk_inv.dot(R_theta_tminus1_k.T)
+#   b = -H.dot(d_theta_tminus1_k)
+#   u = np.zeros(o.dxA)
+#
+#   if not noFuture:
+#     # setup
+#     R_theta_tplus1_k, d_theta_tplus1_k = m.Rt(theta_tplus1_k)
+#     V_theta_tk_theta_tplus1_k_inv, x2_ = m.getVi(
+#       m.inv(theta_tk).dot(theta_tplus1_k), return_phi=True)
+#     if o.lie == 'se2': x2_ = np.array([x2_])
+#     H_ = -V_theta_tk_theta_tplus1_k_inv.dot(R_theta_tk.T)
+#     b_ = -H_.dot(d_theta_tplus1_k)
+#     u_ = np.zeros(o.dxA)
+#     mu, Sigma = inferNormalConditionalNormal(x2, H, b, u, S_tminus1_k,
+#       x2_, H_, b_, u_, S_tplus1_k)
+#   else:
+#     mu, Sigma = inferNormalConditional(x2, H, b, u, S_tminus1_k)
+#
+#   Nk = y_tk.shape[0]
+#   if Nk > 0:
+#     R2 = R_x_t.dot(R_theta_tk)
+#     H = R_x_t
+#     bias = d_x_t
+#     obsCov = R2.dot(E_k).dot(R2.T)
+#     obsCov_inv = R2.dot(np.linalg.inv(E_k)).dot(R2.T)
+#     
+#     Sigma_inv = np.linalg.inv(Sigma)
+#     SigmaNew_inv = Sigma_inv + Nk*H.T.dot(obsCov_inv).dot(H)
+#     SigmaNew = np.linalg.inv(SigmaNew_inv)
+#     muNew = SigmaNew.dot( Sigma_inv.dot(mu) + H.T.dot(obsCov_inv).dot(
+#       np.sum(y_tk, axis=0) - Nk*bias)
+#     )
+#     mu, Sigma = (muNew, SigmaNew)
+#
+#   if kwargs.get('returnMuSigma', False): return mu, Sigma
+#   else: return mvn.rvs(mu, Sigma)
 
-  KEYWORD INPUTS
-    x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
-    Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
-    nRotationSamples (int): length of markov chain for rotation slice sampler
-    w (float): characteristic width of slice sampler, def: np.pi / 100
-    P (float): max doubling iterations of slice sampler def: 10
-    handleSymmetries (bool): MCMC mode hop as a final step
+def sampleRotation(o, ys, d_U, lhs, rhs, E, prevU, prevS, **kwargs):
+  r''' Sample rotation component R_U of SE(D) transformation under given model
 
-  OUTPUT
-    R_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
+  Assumed model is:
+
+                                            optional
+                                    { - - - - - - - - - -  }
+     ( V_inv  d_U    |          )    
+    N(               | 0, prevS ) * N_L ( U | nextU, nextS )
+     ( phi           |          )    
+    *
+    \prod_n
+    N(ys[n] | lhs * U * rhs * 0, (lhs * U * rhs) * E * (lhs * U * rhs)^T
+  
+  Where V_inv, phi depend on prevU, rotation R_U
   '''
   m = getattr(lie, o.lie)
-  K = theta_t.shape[0]
-  d_x_t = x_t[:-1,-1].copy()
+  nSamples = kwargs.get('nSamples', 10)
 
-  nRotationSamples = kwargs.get('nRotationSamples', 10)
-  if nRotationSamples == 0:
-    R_x_t, _ = m.Rt(x_t)
-    return R_x_t 
+  if type(lhs) is not tuple: lhs = ( lhs, )
+  if type(rhs) is not tuple: rhs = ( rhs, )
+  if type(ys) is not tuple: ys = ( ys, )
+  if type(E) is not tuple: E = ( E, )
+  K = len(ys)
+  assert K == len(E) # ys, E must be same length
+  if len(rhs) == 1 and K > 1: rhs = rhs * K
+  if len(lhs) == 1 and K > 1: lhs = lhs * K
 
-  # Get future values, if needed.
-  x_tplus1 = kwargs.get('x_tplus1', None)
-  if x_tplus1 is None:
-    noFuture = True
+  nextU = kwargs.get('nextU', None)
+  if nextU is not None:
+    useFuture = True
+    nextS = kwargs.get('nextS', None)
+    if nextS is None: nextS = prevS
+    R_nextU, d_nextU = m.Rt(nextU)
   else:
-    # Check if we have different Q_tminus1, Q_tplus1
-    Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
-    noFuture = False
+    useFuture = False
 
-  # Sample R_x_t | MB(R_x_t) using slice sampler
-  if o.lie == 'se2': rotIdx = np.arange(2,3)
-  elif o.lie == 'se3': rotIdx = np.arange(3,6) 
+  # Sample R_U | MB(R_U) using slice sampler
+  if o.lie == 'se2':
+    dof = 1
+    mRot = lie.so2
+  elif o.lie == 'se3':
+    dof = 3
+    mRot = lie.so3
+
+  A = kwargs.get('A', None)
+  B = kwargs.get('B', None)
+  if A is not None:
+    assert B is not None
+    Bi = np.linalg.inv(B)
+    controlled = True
 
   ## setup
   zeroAlgebra = np.zeros(o.dxA)
   zeroObs = np.zeros(o.dy)
+  R_prevU, d_prevU = m.Rt(prevU)
 
   # slice sampler parameters
   w = kwargs.get('w', np.pi / 100) # characteristic width
   P = kwargs.get('P', 10) # max doubling iterations
 
-  x_t = x_t.copy()
+  rotIdx = np.arange(dof)
+  phiEst = np.zeros(dof)
   for idx in rotIdx:
-    p0 = m.algi(m.logm(m.inv(x_tminus1).dot(x_t)))
 
-    # inlined functional, making use of lots of closures
-    def slice_log_x_t_full_conditional(idx, p0, a):
-      p = p0.copy()
-      p[idx] = a
+    # inlined functional, making use of closures
+    def slice_conditional(idx, phiEst, a):
+      ll = 0.0
 
-      # full x_t from proposed angle a for given idx
-      x_t_proposal = x_tminus1.dot(m.expm(m.alg(p)))
+      # rotation in lie Algebra
+      phi = phiEst.copy() 
+      phi[idx] = a
+        
+      # rotation in lie Group 
+      R_U = R_prevU @ mRot.expm(mRot.alg(phi))
 
-      ll = 0
+      # Construct group transformation U
+      U = MakeRd(R_U, d_U)
 
-      # prior
-      ll += mvn.logpdf(
-        m.algi(m.logm(m.inv(x_tminus1).dot(x_t_proposal))),
-        zeroAlgebra,
-        Q_tminus1,
-        allow_singular=True
-      )
+      if controlled:
+        m_t = Bi @ (d_U - A @ d_prevU)
+        val = np.concatenate((m_t, phi))
+        ll += mvn.logpdf(val, zeroAlgebra, prevS)
+        if useFuture:
+          m_t1 = Bi @ (d_U - A @ d_prevU)
+          phi_ = np.atleast_1d(mRot.algi(mRot.logm(R_U.T @ R_nextU)))
+          val_ = np.concatenate((m_t1, phi_))
+          ll += mvn.logpdf(val_, zeroAlgebra, nextS)
+      else:
+        # Linear operator on translation d_U, a fcn of R_{prevU}^{-1} * R_U
+        # slightly wasteful, but keep for code clarity
+        V_inv = m.getVi( R_prevU.T @ R_U )
 
-      # future observations, if available
-      if not noFuture:
-        ll += mvn.logpdf(
-          m.algi(m.logm(m.inv(x_t_proposal).dot(x_tplus1))),
-          zeroAlgebra,
-          Q_tplus1,
-          allow_singular=True
-        )
+        # evaluate first time
+        d_prevU_inv_U = V_inv @ R_prevU.T @ (d_U - d_prevU)
+        tangent_vector = np.concatenate((V_inv @ d_prevU_inv_U, phi))
+        ll += mvn.logpdf(tangent_vector, zeroAlgebra, prevS)
 
-      ll += logpdf_data_t(o, y_t, z_t, x_t_proposal, theta_t, E)
+        # evaluate second term (if provided)
+        # todo: I think U, nextU should be flipped?
+        if useFuture: ll += mvnL_logpdf(o, U, nextU, nextS) 
+
+      # evaluate observations (if available)
+      for k in range(K):
+        ys_k = ys[k]
+        if ys_k.shape[0] == 0: continue
+        
+        # ip.embed()
+        yLocal_k = TransformPointsNonHomog(m.inv(lhs[k] @ U @ rhs[k]), ys_k)
+        ll += np.sum(mvn.logpdf(yLocal_k, zeroObs, E[k]))
       return ll
 
     # end full conditional functional
-    llFunc = functools.partial(slice_log_x_t_full_conditional, idx, p0)
-    x_t_sample_angles, _ll = sample.slice_univariate(llFunc, p0[idx],
-      w=w, P=P, nSamples=nRotationSamples, xmin=-np.pi, xmax=np.pi)
+    llFunc = functools.partial(slice_conditional, idx, phiEst)
+    samples, _ll = sample.slice_univariate(llFunc, phiEst[idx],
+      w=w, P=P, nSamples=nSamples, xmin=-np.pi, xmax=np.pi)
 
-    # Note: x_t_sample_angles are just univariate floats so we need to plug
-    #       new sampled angle into matrix repr
-    p = p0.copy()
-    p[idx] = x_t_sample_angles[-1]
-    x_t = x_tminus1.dot(m.expm(m.alg(p)))
+    # samples are univariate floats so we need to plug new sampled algebra
+    # coordinates into phiEst
+    phiEst[idx] = samples[-1]
   # end loop over rotation coordinates
-
-  # set us back to original translation
-  ## todo: check if this is necessary
-  x_t[:-1,-1] = d_x_t
+  
+  # construct rotation from phiEst and d_U
+  R_U = R_prevU @ mRot.expm(mRot.alg(phiEst))
+  U = MakeRd(R_U, d_U)
 
   # handle rotation symmetries
   if kwargs.get('handleSymmetries', True):
-    def dynamicsLL(x_t_candidate):
-      ll = mvnL_logpdf(o, x_t_candidate, x_tminus1, Q_tminus1)
-      if not noFuture: ll += mvnL_logpdf(o, x_tplus1, x_t_candidate, Q_tplus1)
-      return ll
+    if controlled:
+      def dynamicsLL(U_candidate):
+        R_cand, d_cand = m.Rt(U_candidate)
+        m_t = Bi @ (d_cand - A @ d_prevU)
+        phi = np.atleast_1d(mRot.algi(mRot.logm(R_prevU.T @ R_cand)))
+        val = np.concatenate((m_t, phi))
+        ll = mvn.logpdf(val, zeroAlgebra, prevS)
+        if useFuture:
+          m_t1 = Bi @ (d_nextU - A @ d_cand)
+          phi_ = np.atleast_1d(mRot.algi(mRot.logm(R_cand.T @ R_nextU)))
+          val_ = np.concatenate((m_t1, phi_))
+          ll += mvn.logpdf(val_, zeroAlgebra, nextS)
+        return ll
+    else:
+      def dynamicsLL(U_candidate):
+        ll = mvnL_logpdf(o, U_candidate, prevU, prevS)
+        if useFuture: ll += mvnL_logpdf(o, nextU, U_candidate, nextS)
+        return ll
     
     # build all possible x_t_candidates from rotation symmetries
-    x_t_candidates = util.rotation_symmetries(x_t)
-    lls = [ dynamicsLL(x_t_candidate) for x_t_candidate in x_t_candidates ]
-    x_t = x_t_candidates[np.argmax(lls)]
+    U_candidates = util.rotation_symmetries(U)
 
-  R_x_t, _ = m.Rt(x_t)
-  return R_x_t 
+    lls = [ dynamicsLL(U_candidate) for U_candidate in U_candidates ]
+    U = U_candidates[np.argmax(lls)]
 
-def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
-  r''' sample R_theta_tk | MB(R_theta_tk) using slice sampler
+  R_U, _ = m.Rt(U)
+  return R_U
 
-  INPUT
-    o (argparse.Namespace): Algorithm options
-    y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
-    theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
-    x_t (ndarray, dxGm): Current global latent dynamic, time t
-    S_tminus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov 
-    E_k (ndarray, [dy, dy]): Part k Extent
-    theta_tminus1_k (ndarray, dxGm): Global latent dynamic, time t-1
 
-  KEYWORD INPUTS
-    theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
-    S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
-    nRotationSamples (int): length of markov chain for rotation slice sampler
-    w (float): characteristic width of slice sampler, def: np.pi / 100
-    P (float): max doubling iterations of slice sampler def: 10
-    handleSymmetries (bool): MCMC mode hop as a final step
+# def sampleRotationX(o, y_t, z_t, x_t, theta_t, E, Q_tminus1, x_tminus1, **kwargs):
+#   r''' Sample translation component d_x_t of x_t
+#
+#   INPUT
+#     o (argparse.Namespace): Algorithm options
+#     y_t (ndarray, [N_t, dy]): Observations at time t
+#     z_t (ndarray, [N_t,]): Associations at time t
+#     x_t (ndarray, dxGm): Current global latent dynamic, time t
+#     theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
+#     E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
+#     Q_tminus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t-1
+#     x_tminus1 (ndarray, dxGm): Previous global latent dynamic, time t
+#
+#   KEYWORD INPUTS
+#     x_tplus1 (ndarray, dxGm): Global latent dynamic, time t+1
+#     Q_tplus1 (ndarray, [dxA, dxA]): Global Dynamic Noise Cov, time t+1
+#     nRotationSamples (int): length of markov chain for rotation slice sampler
+#     w (float): characteristic width of slice sampler, def: np.pi / 100
+#     P (float): max doubling iterations of slice sampler def: 10
+#     handleSymmetries (bool): MCMC mode hop as a final step
+#
+#   OUTPUT
+#     R_x_t (ndarray, [dy,]): Sampled global k translation dynamic, time t
+#   '''
+#   m = getattr(lie, o.lie)
+#   K = theta_t.shape[0]
+#   d_x_t = x_t[:-1,-1].copy()
+#
+#   nRotationSamples = kwargs.get('nRotationSamples', 10)
+#   if nRotationSamples == 0:
+#     R_x_t, _ = m.Rt(x_t)
+#     return R_x_t 
+#
+#   # Get future values, if needed.
+#   x_tplus1 = kwargs.get('x_tplus1', None)
+#   if x_tplus1 is None:
+#     noFuture = True
+#   else:
+#     # Check if we have different Q_tminus1, Q_tplus1
+#     Q_tplus1 = kwargs.get('Q_tplus1', Q_tminus1)
+#     noFuture = False
+#
+#   # Sample R_x_t | MB(R_x_t) using slice sampler
+#   if o.lie == 'se2': rotIdx = np.arange(2,3)
+#   elif o.lie == 'se3': rotIdx = np.arange(3,6) 
+#
+#   ## setup
+#   zeroAlgebra = np.zeros(o.dxA)
+#   zeroObs = np.zeros(o.dy)
+#
+#   # slice sampler parameters
+#   w = kwargs.get('w', np.pi / 100) # characteristic width
+#   P = kwargs.get('P', 10) # max doubling iterations
+#
+#   x_t = x_t.copy()
+#   for idx in rotIdx:
+#     p0 = m.algi(m.logm(m.inv(x_tminus1).dot(x_t)))
+#
+#     # inlined functional, making use of lots of closures
+#     def slice_log_x_t_full_conditional(idx, p0, a):
+#       p = p0.copy()
+#       p[idx] = a
+#
+#       # full x_t from proposed angle a for given idx
+#       x_t_proposal = x_tminus1.dot(m.expm(m.alg(p)))
+#
+#       ll = 0
+#
+#       # prior
+#       ll += mvn.logpdf(
+#         m.algi(m.logm(m.inv(x_tminus1).dot(x_t_proposal))),
+#         zeroAlgebra,
+#         Q_tminus1,
+#         allow_singular=True
+#       )
+#
+#       # future observations, if available
+#       if not noFuture:
+#         ll += mvn.logpdf(
+#           m.algi(m.logm(m.inv(x_t_proposal).dot(x_tplus1))),
+#           zeroAlgebra,
+#           Q_tplus1,
+#           allow_singular=True
+#         )
+#
+#       ll += logpdf_data_t(o, y_t, z_t, x_t_proposal, theta_t, E)
+#       return ll
+#
+#     # end full conditional functional
+#     llFunc = functools.partial(slice_log_x_t_full_conditional, idx, p0)
+#     x_t_sample_angles, _ll = sample.slice_univariate(llFunc, p0[idx],
+#       w=w, P=P, nSamples=nRotationSamples, xmin=-np.pi, xmax=np.pi)
+#
+#     # Note: x_t_sample_angles are just univariate floats so we need to plug
+#     #       new sampled angle into matrix repr
+#     p = p0.copy()
+#     p[idx] = x_t_sample_angles[-1]
+#     x_t = x_tminus1.dot(m.expm(m.alg(p)))
+#   # end loop over rotation coordinates
+#
+#   # set us back to original translation
+#   ## todo: check if this is necessary
+#   x_t[:-1,-1] = d_x_t
+#
+#   # handle rotation symmetries
+#   if kwargs.get('handleSymmetries', True):
+#     def dynamicsLL(x_t_candidate):
+#       ll = mvnL_logpdf(o, x_t_candidate, x_tminus1, Q_tminus1)
+#       if not noFuture: ll += mvnL_logpdf(o, x_tplus1, x_t_candidate, Q_tplus1)
+#       return ll
+#     
+#     # build all possible x_t_candidates from rotation symmetries
+#     x_t_candidates = util.rotation_symmetries(x_t)
+#     lls = [ dynamicsLL(x_t_candidate) for x_t_candidate in x_t_candidates ]
+#     x_t = x_t_candidates[np.argmax(lls)]
+#
+#   R_x_t, _ = m.Rt(x_t)
+#   return R_x_t 
 
-  OUTPUT
-    R_theta_tk (ndarray, [dy, dy]): Sampled rotation estimate.
-  '''
-  m = getattr(lie, o.lie)
-  d_theta_tk = theta_tk[:-1,-1]
-
-  nRotationSamples = kwargs.get('nRotationSamples', 10)
-  if nRotationSamples == 0:
-    R_theta_tk, _ = m.Rt(theta_tk)
-    return R_theta_tk
-
-  # Get future values, if needed.
-  theta_tplus1_k = kwargs.get('theta_tplus1_k', None)
-  if theta_tplus1_k is None: noFuture = True
-  else: noFuture = False
-  S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
-
-  if o.lie == 'se2': rotIdx = np.arange(2,3)
-  elif o.lie == 'se3': rotIdx = np.arange(3,6) 
-
-  ## setup
-  zeroAlgebra = np.zeros(o.dxA)
-  zeroObs = np.zeros(o.dy)
-
-  # slice sampler parameters
-  w = kwargs.get('w', np.pi / 100) # characteristic width
-  P = kwargs.get('P', 10) # max doubling iterations
-
-  theta_tk = theta_tk.copy() # don't modify passed parameter
-  z_tkFake = np.zeros(y_tk.shape[0], dtype=np.int) # fake z_t for logpdf_data_t
-  for idx in rotIdx:
-    p0 = m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk)))
-
-    # inlined functional, making use of lots of closures
-    def slice_log_theta_tk_full_conditional(idx, p0, a):
-      p = p0.copy()
-      p[idx] = a
-
-      # full theta_tk from proposed angle a for given idx
-      theta_tk_proposal = theta_tminus1_k.dot(m.expm(m.alg(p)))
-
-      ll = 0
-
-      # prior
-      ll += mvn.logpdf(
-        m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk_proposal))),
-        zeroAlgebra,
-        S_tminus1_k,
-        allow_singular=True
-      )
-
-      # future observations, if available
-      if not noFuture:
-        ll += mvn.logpdf(
-          m.algi(m.logm(m.inv(theta_tk_proposal).dot(theta_tplus1_k))),
-          zeroAlgebra,
-          S_tplus1_k,
-          allow_singular=True
-        )
-     
-      ll += logpdf_data_t(o, y_tk, z_tkFake, x_t, theta_tk_proposal[np.newaxis],
-        E_k[np.newaxis])
-      # if y_tk.shape[0] > 0:
-      #   y_tk_world = y_tk
-      #   T_part_world = m.inv(x_t.dot(theta_tk_proposal))
-      #   y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
-      #   ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E_k, allow_singular=True))
-
-      return ll
-    # end full conditional functional
-
-    llFunc = functools.partial(slice_log_theta_tk_full_conditional, idx, p0)
-    theta_tk_sample_angles, _ll = sample.slice_univariate(llFunc, p0[idx],
-      w=w, P=P, nSamples=nRotationSamples, xmin=-np.pi, xmax=np.pi)
-
-    # Note: theta_tk_sample_angles are just univariate floats so we need to plug
-    #       new sampled angle into matrix repr
-    p = p0.copy()
-    p[idx] = theta_tk_sample_angles[-1]
-    theta_tk = theta_tminus1_k.dot(m.expm(m.alg(p)))
-  # end loop over rotation coordinates
-
-  theta_tk[:-1,-1] = d_theta_tk
-  # handle rotation symmetries
-  if kwargs.get('handleSymmetries', True):
-    def dynamicsLL(theta_tk_candidate):
-      ll = mvnL_logpdf(o, theta_tk_candidate, theta_tminus1_k, S_tminus1_k)
-      if not noFuture:
-        ll += mvnL_logpdf(o, theta_tplus1_k, theta_tk_candidate, S_tplus1_k)
-      return ll
-    
-    # build all possible x_t_candidates from rotation symmetries
-    theta_tk_candidates = util.rotation_symmetries(theta_tk)
-    lls = [ dynamicsLL(theta_tk_candidate) for theta_tk_candidate in
-      theta_tk_candidates ]
-    theta_tk = theta_tk_candidates[np.argmax(lls)]
-
-  R_theta_tk, _ = m.Rt(theta_tk)
-  return R_theta_tk
+# def sampleRotationTheta(o, y_tk, theta_tk, x_t, S_tminus1_k, E_k, theta_tminus1_k, **kwargs):
+#   r''' sample R_theta_tk | MB(R_theta_tk) using slice sampler
+#
+#   INPUT
+#     o (argparse.Namespace): Algorithm options
+#     y_tk (ndarray, [N_tk, dy]): Observations associated to part k at time t
+#     theta_tk (ndarray, dxGm): Part k Local Dynamic (current estimate)
+#     x_t (ndarray, dxGm): Current global latent dynamic, time t
+#     S_tminus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov 
+#     E_k (ndarray, [dy, dy]): Part k Extent
+#     theta_tminus1_k (ndarray, dxGm): Global latent dynamic, time t-1
+#
+#   KEYWORD INPUTS
+#     theta_tplus1_k (ndarray, dxGm): Global latent dynamic, time t+1
+#     S_tplus1_k (ndarray, [dxA, dxA]): Part k Local Dynamic Noise Cov, time t+1
+#     nRotationSamples (int): length of markov chain for rotation slice sampler
+#     w (float): characteristic width of slice sampler, def: np.pi / 100
+#     P (float): max doubling iterations of slice sampler def: 10
+#     handleSymmetries (bool): MCMC mode hop as a final step
+#
+#   OUTPUT
+#     R_theta_tk (ndarray, [dy, dy]): Sampled rotation estimate.
+#   '''
+#   m = getattr(lie, o.lie)
+#   d_theta_tk = theta_tk[:-1,-1]
+#
+#   nRotationSamples = kwargs.get('nRotationSamples', 10)
+#   if nRotationSamples == 0:
+#     R_theta_tk, _ = m.Rt(theta_tk)
+#     return R_theta_tk
+#
+#   # Get future values, if needed.
+#   theta_tplus1_k = kwargs.get('theta_tplus1_k', None)
+#   if theta_tplus1_k is None: noFuture = True
+#   else: noFuture = False
+#   S_tplus1_k = kwargs.get('S_tplus1_k', S_tminus1_k)
+#
+#   if o.lie == 'se2': rotIdx = np.arange(2,3)
+#   elif o.lie == 'se3': rotIdx = np.arange(3,6) 
+#
+#   ## setup
+#   zeroAlgebra = np.zeros(o.dxA)
+#   zeroObs = np.zeros(o.dy)
+#
+#   # slice sampler parameters
+#   w = kwargs.get('w', np.pi / 100) # characteristic width
+#   P = kwargs.get('P', 10) # max doubling iterations
+#
+#   theta_tk = theta_tk.copy() # don't modify passed parameter
+#   z_tkFake = np.zeros(y_tk.shape[0], dtype=np.int) # fake z_t for logpdf_data_t
+#   for idx in rotIdx:
+#     p0 = m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk)))
+#
+#     # inlined functional, making use of lots of closures
+#     def slice_log_theta_tk_full_conditional(idx, p0, a):
+#       p = p0.copy()
+#       p[idx] = a
+#
+#       # full theta_tk from proposed angle a for given idx
+#       theta_tk_proposal = theta_tminus1_k.dot(m.expm(m.alg(p)))
+#
+#       ll = 0
+#
+#       # prior
+#       ll += mvn.logpdf(
+#         m.algi(m.logm(m.inv(theta_tminus1_k).dot(theta_tk_proposal))),
+#         zeroAlgebra,
+#         S_tminus1_k,
+#         allow_singular=True
+#       )
+#
+#       # future observations, if available
+#       if not noFuture:
+#         ll += mvn.logpdf(
+#           m.algi(m.logm(m.inv(theta_tk_proposal).dot(theta_tplus1_k))),
+#           zeroAlgebra,
+#           S_tplus1_k,
+#           allow_singular=True
+#         )
+#      
+#       ll += logpdf_data_t(o, y_tk, z_tkFake, x_t, theta_tk_proposal[np.newaxis],
+#         E_k[np.newaxis])
+#
+#       return ll
+#     # end full conditional functional
+#
+#     llFunc = functools.partial(slice_log_theta_tk_full_conditional, idx, p0)
+#     theta_tk_sample_angles, _ll = sample.slice_univariate(llFunc, p0[idx],
+#       w=w, P=P, nSamples=nRotationSamples, xmin=-np.pi, xmax=np.pi)
+#
+#     # Note: theta_tk_sample_angles are just univariate floats so we need to plug
+#     #       new sampled angle into matrix repr
+#     p = p0.copy()
+#     p[idx] = theta_tk_sample_angles[-1]
+#     theta_tk = theta_tminus1_k.dot(m.expm(m.alg(p)))
+#   # end loop over rotation coordinates
+#
+#   theta_tk[:-1,-1] = d_theta_tk
+#   # handle rotation symmetries
+#   if kwargs.get('handleSymmetries', True):
+#     def dynamicsLL(theta_tk_candidate):
+#       ll = mvnL_logpdf(o, theta_tk_candidate, theta_tminus1_k, S_tminus1_k)
+#       if not noFuture:
+#         ll += mvnL_logpdf(o, theta_tplus1_k, theta_tk_candidate, S_tplus1_k)
+#       return ll
+#     
+#     # build all possible x_t_candidates from rotation symmetries
+#     theta_tk_candidates = util.rotation_symmetries(theta_tk)
+#     lls = [ dynamicsLL(theta_tk_candidate) for theta_tk_candidate in
+#       theta_tk_candidates ]
+#     theta_tk = theta_tk_candidates[np.argmax(lls)]
+#
+#   R_theta_tk, _ = m.Rt(theta_tk)
+#   return R_theta_tk
 
 def inferZ(o, y_t, pi, theta_t, E, x_t, mL_t, **kwargs):
   r''' Sample z_{tn} | y_{tn}, pi, theta_t, E
@@ -1025,13 +1688,14 @@ def inferPi(o, Nk, alpha):
 
   return pi
 
-def inferE(o, x, theta, y, z):
+def inferE(o, x, theta, omega, y, z):
   r''' Sample E_k from inverse wishart posterior, for all parts k
 
   INPUT
     o (argparse.Namespace): Algorithm options
     x (ndarray, [T, dxGf]): Global latent dynamics
     theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    omega (ndarray, [K,] + dxGm): K-Part Canonical dynamic.
     y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
 
@@ -1048,9 +1712,9 @@ def inferE(o, x, theta, y, z):
       ztk = z[t]==k
       if np.sum(ztk) == 0: continue
       ytk_world = y[t][ztk]
-      T_part_world = m.inv(x[t].dot(theta[t,k]))
+      # T_part_world = m.inv(x[t].dot(theta[t,k]))
+      T_part_world = m.inv(x[t] @ omega[k] @ theta[t,k])
       ytk_part = TransformPointsNonHomog(T_part_world, ytk_world)
-
       v_E, S_E = inferNormalInvWishart(v_E, S_E, ytk_part)
     E[k] = np.diag(np.diag(iw.rvs(v_E, S_E)))
   return E
@@ -1262,7 +1926,7 @@ def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
 
   return mL
 
-def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, mL, ll,
+def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll,
   subsetIdx=None, dataset=None):
   r''' Save sample to disk.
 
@@ -1277,13 +1941,14 @@ def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, mL, ll,
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    theta (ndarray, [K,] + dxGm): K-Part Canonical dynamic.
     mL
     ll (float): joint log-likelihood
     subsetIdx (list of ndarray, [ [N_1,], ... [N_T,] ]): Observation subset
     dataset (string): Path to dataset
   '''
   dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
-    mL=mL, ll=ll, subsetIdx=subsetIdx, dataset=dataset)
+    omega=omega, mL=mL, ll=ll, subsetIdx=subsetIdx, dataset=dataset)
   du.save(filename, dct)
   # dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
   #   ll=ll)
@@ -1311,118 +1976,118 @@ def loadSample(filename):
     dataset (string): Path to dataset
   ''' 
   d = du.load(filename)
-  o, alpha, z, pi, theta, E, S, x, Q, mL, ll = \
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll = \
     (d['o'], d['alpha'], d['z'], d['pi'], d['theta'], d['E'], d['S'], d['x'],
-     d['Q'], d['mL'], d['ll'])
+     d['Q'], d['omega'], d['mL'], d['ll'])
   subsetIdx, dataset = ( d.get('subsetIdx', None), d.get('dataset', None) )
-  return o, alpha, z, pi, theta, E, S, x, Q, mL, ll, subsetIdx, dataset
+  return o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, dataset
 
-def sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
-  r''' Attempt to sample new part, initialize if sampled.
+# def sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
+#   r''' Attempt to sample new part, initialize if sampled.
+#
+#   INPUT
+#     o (argparse.Namespace): Algorithm options
+#     y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+#     alpha (float): Concentration parameter, default 1e-3
+#     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+#     pi (ndarray, [T, K+1]): Local association priors for each time
+#     theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+#     E (ndarray, [K, dy, dy: K-Part Local Extent
+#     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+#     x (ndarray, [T,] + dxGm): Global latent dynamic.
+#     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+#     mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+#
+#   KEYWORD INPUT
+#     minNonAssoc (int): Minimum # non-associated points to instantiate new part
+#
+#   OUTPUT
+#     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+#     pi (ndarray, [T, K+1]): Local association priors for each time
+#     theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+#     E (ndarray, [K, dy, dy: K-Part Local Extent
+#     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+#   '''
+#   T, K = theta.shape[:2]
+#   minNonAssoc = kwargs.get('minNonAssoc', 1)
+#   assert minNonAssoc > 0
+#
+#   # Any observations associated to base measure? If not, return
+#   nonAssoc = [ z[t] == -1 for t in range(T) ]
+#   nNonAssoc = np.array([ np.sum(nonAssoc[t]) for t in range(T) ])
+#   anyNonAssoc = np.sum(nNonAssoc) >= minNonAssoc
+#   if not anyNonAssoc: return z, pi, theta, E, S
+#   
+#   # Randomly select an observation to initialize on
+#   tInit = np.random.choice(np.where(nNonAssoc)[0])
+#   idx = np.random.choice(np.where(nonAssoc[tInit])[0])
+#   z[tInit][idx] = K
+#
+#   # Make new part k, merge with existing parts. For time tInit, set new part to
+#   # identity rotation & translation of point it was initialized on
+#   k = K
+#   theta, E, S = mergeComponents(o, theta, E, S, *sampleKPartsFromPrior(o, T, 1))
+#   theta[tInit, k] = util.make_rigid_transform(np.eye(o.dy), y[tInit][idx])
+#
+#   # Add new part to pi
+#   logPi = np.log(pi)
+#   logPi = np.concatenate((pi, np.array([np.log(alpha),])))
+#   pi = np.exp(logPi - logsumexp(logPi))
+#   assert np.isclose(np.sum(pi), 1.0)
+#
+#   # propagate new part fwd, back, only change z and new part
+#   for t in reversed(range(tInit)):
+#     # propagate theta_{t+1} -> theta_t
+#     thetaPredict_t = theta[t+1]
+#
+#     # associate
+#     zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
+#
+#     # sample new part rotation, translation
+#     y_tk = y[t][zPredict==k]
+#     thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+#       thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
+#     thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+#       thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
+#     theta[t] = thetaPredict_t
+#
+#     # re-associate
+#     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+#
+#   for t in range(tInit+1, T):
+#     # propagate theta_{t-1} -> theta_t
+#     thetaPredict_t = theta[t-1]
+#     
+#     # associate
+#     zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
+#
+#     # sample part rotation, translation
+#     y_tk = y[t][zPredict==k]
+#     thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
+#       thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
+#     thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
+#       thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
+#     theta[t] = thetaPredict_t
+#
+#     # re-associate
+#     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
+#
+#   # infer S_k, E_k
+#   S[k] = inferSk(o, theta[:,k])
+#   E[k] = inferEk(o, x, theta, y, z, k)
+#
+#   # # Remove any dead parts
+#   z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
+#     E, S)
+#
+#   assert theta.shape[1] == len(pi)-1
+#   assert E.shape[0] == len(pi)-1
+#   assert S.shape[0] == len(pi)-1
+#   assert np.isclose(np.sum(pi), 1.0)
+#
+#   return z, pi, theta, E, S
 
-  INPUT
-    o (argparse.Namespace): Algorithm options
-    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
-    alpha (float): Concentration parameter, default 1e-3
-    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
-    pi (ndarray, [T, K+1]): Local association priors for each time
-    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
-    E (ndarray, [K, dy, dy: K-Part Local Extent
-    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
-    x (ndarray, [T,] + dxGm): Global latent dynamic.
-    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
-    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
-
-  KEYWORD INPUT
-    minNonAssoc (int): Minimum # non-associated points to instantiate new part
-
-  OUTPUT
-    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
-    pi (ndarray, [T, K+1]): Local association priors for each time
-    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
-    E (ndarray, [K, dy, dy: K-Part Local Extent
-    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
-  '''
-  T, K = theta.shape[:2]
-  minNonAssoc = kwargs.get('minNonAssoc', 1)
-  assert minNonAssoc > 0
-
-  # Any observations associated to base measure? If not, return
-  nonAssoc = [ z[t] == -1 for t in range(T) ]
-  nNonAssoc = np.array([ np.sum(nonAssoc[t]) for t in range(T) ])
-  anyNonAssoc = np.sum(nNonAssoc) >= minNonAssoc
-  if not anyNonAssoc: return z, pi, theta, E, S
-  
-  # Randomly select an observation to initialize on
-  tInit = np.random.choice(np.where(nNonAssoc)[0])
-  idx = np.random.choice(np.where(nonAssoc[tInit])[0])
-  z[tInit][idx] = K
-
-  # Make new part k, merge with existing parts. For time tInit, set new part to
-  # identity rotation & translation of point it was initialized on
-  k = K
-  theta, E, S = mergeComponents(o, theta, E, S, *sampleKPartsFromPrior(o, T, 1))
-  theta[tInit, k] = util.make_rigid_transform(np.eye(o.dy), y[tInit][idx])
-
-  # Add new part to pi
-  logPi = np.log(pi)
-  logPi = np.concatenate((pi, np.array([np.log(alpha),])))
-  pi = np.exp(logPi - logsumexp(logPi))
-  assert np.isclose(np.sum(pi), 1.0)
-
-  # propagate new part fwd, back, only change z and new part
-  for t in reversed(range(tInit)):
-    # propagate theta_{t+1} -> theta_t
-    thetaPredict_t = theta[t+1]
-
-    # associate
-    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
-
-    # sample new part rotation, translation
-    y_tk = y[t][zPredict==k]
-    thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
-      thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
-    thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
-      thetaPredict_t[k], x[t], S[k], E[k], theta[t+1,k])
-    theta[t] = thetaPredict_t
-
-    # re-associate
-    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
-
-  for t in range(tInit+1, T):
-    # propagate theta_{t-1} -> theta_t
-    thetaPredict_t = theta[t-1]
-    
-    # associate
-    zPredict = inferZ(o, y[t], pi, thetaPredict_t, E, x[t], mL[t])
-
-    # sample part rotation, translation
-    y_tk = y[t][zPredict==k]
-    thetaPredict_t[k,:-1,:-1] = sampleRotationTheta(o, y_tk,
-      thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
-    thetaPredict_t[k,:-1,-1] = sampleTranslationTheta(o, y_tk,
-      thetaPredict_t[k], x[t], S[k], E[k], theta[t-1,k])
-    theta[t] = thetaPredict_t
-
-    # re-associate
-    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
-
-  # infer S_k, E_k
-  S[k] = inferSk(o, theta[:,k])
-  E[k] = inferEk(o, x, theta, y, z, k)
-
-  # # Remove any dead parts
-  z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
-    E, S)
-
-  assert theta.shape[1] == len(pi)-1
-  assert E.shape[0] == len(pi)-1
-  assert S.shape[0] == len(pi)-1
-  assert np.isclose(np.sum(pi), 1.0)
-
-  return z, pi, theta, E, S
-
-def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
+def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
   r''' Perform full gibbs ssampling pass. Input values will be overwritten.
 
   INPUT
@@ -1436,6 +2101,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    omega (ndarray, [K,] + dxGm): K-Part Canonical dynamic.
     mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
 
   KEYWORD INPUT
@@ -1450,17 +2116,20 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     x (ndarray, [T,] + dxGm): Global latent dynamic.
     Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    omega (ndarray, [K,] + dxGm): K-Part Canonical dynamic.
     ll (float): joint log-likelihood
   '''
+  m = getattr(lie, o.lie)
   T, K = ( len(y), len(pi)-1 )
   dontSampleX = kwargs.get('dontSampleX', False)
 
-  # sample new part, propagate
-  if kwargs.get('newPart', True):
-    z, pi, theta, E, S = sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q,
-      mL, **kwargs)
-    K = len(pi) - 1
+  # # sample new part, propagate
+  # if kwargs.get('newPart', True):
+  #   z, pi, theta, E, S = sampleNewPart(o, y, alpha, z, pi, theta, E, S, x, Q,
+  #     mL, **kwargs)
+  #   K = len(pi) - 1
 
+  I = np.eye(o.dy+1)
   for t in range(T):
     for k in range(K):
       # sample theta_tk
@@ -1468,15 +2137,36 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
       else: thetaPrev, SPrev = ( theta[t-1,k], S[k] )
       if t==T-1: thetaNext, SNext = ( None, None )
       else: thetaNext, SNext = ( theta[t+1,k], S[k] )
-      thetaPredict = theta[t,k]
+
       y_tk = y[t][z[t]==k]
+      R_theta_tk = m.Rt(theta[t,k])[0]
+      rhs = I
+      lhs = x[t] @ omega[k]
+      # lhs = x[t] 
 
-      thetaPredict[:-1,:-1] = sampleRotationTheta(o, y_tk, thetaPredict, x[t],
-        SPrev, E[k], thetaPrev, theta_tplus1_k=thetaNext, S_tplus1_k=SNext)
-      thetaPredict[:-1,-1] = sampleTranslationTheta(o, y_tk, thetaPredict, x[t],
-        SPrev, E[k], thetaPrev, theta_tplus1_k=thetaNext, S_tplus1_k=SNext)
+      # sample translation | rotation
+      mu, Sigma = thetaTranslationDynamicsPosterior( o, R_theta_tk, thetaPrev,
+        SPrev, nextU=thetaNext, A, B, nextS=SNext)
+      mu, Sigma = translationObservationPosterior(o, y_tk, R_theta_tk,
+        lhs, rhs, E[k], mu, Sigma)
+      d_theta_tk = mvn.rvs(mu, Sigma)
 
-      theta[t,k] = thetaPredict
+      R_theta_tk = sampleRotation(o, y_tk, d_theta_tk, lhs, rhs, E[k],
+        thetaPrev, SPrev, nextU=thetaNext, nextS=SNext, A=A, B=B)
+
+      # old style
+      # mu, Sigma = translationDynamicsPosterior(
+      #   o, R_theta_tk, thetaPrev, SPrev, nextU=thetaNext, nextS=SNext)
+      # mu, Sigma = translationObservationPosterior(o, y_tk, R_theta_tk,
+      #   lhs, rhs, E[k], mu, Sigma)
+      # d_theta_tk = mvn.rvs(mu, Sigma)
+
+      # sample rotation | translation
+      # R_theta_tk = sampleRotation(o, y_tk, d_theta_tk, lhs, rhs, E[k],
+      #   thetaPrev, SPrev, nextU=thetaNext, nextS=SNext)
+      
+      # set new sample
+      theta[t,k] = MakeRd(R_theta_tk, d_theta_tk)
 
     if not dontSampleX:
       # sample x_t
@@ -1484,13 +2174,31 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
       else: xPrev, QPrev = ( x[t-1], Q )
       if t==T-1: xNext, QNext = ( None, None )
       else: xNext, QNext = ( x[t+1], Q )
-      xPredict = x[t]
 
-      xPredict[:-1,:-1] = sampleRotationX(o, y[t], z[t], xPredict, theta[t], E,
-        QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
-      xPredict[:-1,-1] = sampleTranslationX(o, y[t], z[t], xPredict, theta[t], E,
-        QPrev, xPrev, x_tplus1=xNext, Q_tplus1=QNext)
-      x[t] = xPredict
+      R_x_t = m.Rt(x[t])[0]
+      lhs = I
+
+      # sample translation | rotation
+      mu, Sigma = translationDynamicsPosterior(
+        o, R_x_t, xPrev, QPrev, nextU=xNext, nextS=QNext)
+      for k in range(K):
+        y_tk = y[t][z[t]==k]
+        rhs = omega[k] @ theta[t,k]
+        # rhs = theta[t,k]
+
+        mu, Sigma = translationObservationPosterior(o, y_tk, R_x_t,
+          lhs, rhs, E[k], mu, Sigma)
+      d_x_t = mvn.rvs(mu, Sigma)
+      
+      # sample rotation | translation
+      ## gather all y_tk
+      yParts = tuple( y[t][z[t]==k] for k in range(K) )
+      EParts = tuple( E[k] for k in range(K) )
+      rhs = tuple( omega[k] @ theta[t,k] for k in range(K) )
+      # rhs = tuple( theta[t,k] for k in range(K) )
+
+      R_x_t = sampleRotation(o, yParts, d_x_t, lhs, rhs, EParts,
+        xPrev, QPrev, nextU=xNext, nextS=QNext)
 
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
@@ -1504,12 +2212,18 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, **kwargs):
 
   if K > 0: S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
   else: S = np.zeros((0, o.dxA, o.dxA))
-  E = inferE(o, x, theta, y, z)
+  # E = inferE(o, x, theta, y, z)
+
+  # sample omega
+  R_omega = omega[:,:o.dy,:o.dy]
+  omega = sampleOmega(o, y, z, x, theta, E, R_omega)
+
+  E = inferE(o, x, theta, omega, y, z)
 
   # compute log-likelihood
-  ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+  ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
 
-  return z, pi, theta, E, S, x, Q, ll
+  return z, pi, theta, E, S, x, Q, omega, ll
 
 def consolidatePartsAndResamplePi(o, z, pi, alpha, theta, E, S):
   """ Remove unassociated parts, relabel/sort z, theta, E, S and resample pi
@@ -1801,7 +2515,7 @@ def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
   else:
     return False, z, x, theta, E, S, Q, alpha, pi, mL
 
-def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwitch, **kwargs):
+def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch, **kwargs):
   # RJMCMC birth/death 
   K = len(pi) - 1
   pGibbs = 1 - (pBirth + pDeath + pSwitch)
@@ -1827,23 +2541,10 @@ def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwi
   elif moves[move] == 'death': # death
     accept, z, x, theta, E, S, Q, alpha, pi, mL = try_death(o, y,
       z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth)
-  # elif moves[move] == 'switch':
-  #   accept, z, x, theta, E, S, Q, alpha, pi, mL = try_switch(o, y,
-  #     z, x, theta, E, S, Q, alpha, pi, mL)
-  # elif moves[move] == 'switch':
-  #   # combs = itertools.combinations(range(K), 2)
-  #   # combs = itertools.combinations(range(K), 3)
-  #   import random
-  #   combs = list(itertools.combinations(range(K), 3))
-  #   random.shuffle(combs)
-  #   for cnt, comb in enumerate(combs):
-  #     ks = comb
-  #     accept, z, x, theta, E, S, Q, alpha, pi, mL = try_switch(o, y,
-  #       z, x, theta, E, S, Q, alpha, pi, mL, ks=ks)
-  #     if not np.all( np.asarray(comb) == np.arange(K) ) and accept: break
   elif moves[move] == 'switch':
     import random
     combs = list(itertools.combinations(range(K), 2))
+    # combs = itertools.combinations(range(K), 3)
     random.shuffle(combs)
     for comb in combs:
       ks = comb
@@ -1852,11 +2553,105 @@ def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwi
   elif moves[move] == 'gibbs':
     accept = True
     dontSampleX = kwargs.get('dontSampleX', False)
-    z, pi, theta, E, S, x, Q, ll = sampleStepFC(o, y, alpha, z, pi, theta,
-      E, S, x, Q, mL, newPart=False, dontSampleX=dontSampleX)
-  
-  return z, pi, theta, E, S, x, Q, mL, moves[move], accept
 
+    z, pi, theta, E, S, x, Q, omega, ll = sampleStepFC(o, y, alpha, z, pi,
+      theta, E, S, x, Q, omega, mL, newPart=False, dontSampleX=dontSampleX)
+  
+  return z, pi, theta, E, S, x, Q, omega, mL, moves[move], accept
+
+def partPosteriors(o, y, x, z, theta, E):
+  m = getattr(lie, o.lie)
+  T, K = theta.shape[:2]
+  colors = du.diffcolors(100, bgCols=[[1,1,1],[0,0,0]])
+
+  # for each part, collect d_{theta_{tk}} for each time
+  import matplotlib.pyplot as plt
+  for k in range(K):
+    d_theta = theta[:,k,:-1, -1]
+    pts = du.stats.Gauss2DPoints( np.mean(d_theta,axis=0), np.cov(d_theta.T),
+      deviations=2.0)
+
+    # plt.plot(*pts, color=colors[k])
+    # plt.scatter(d_theta[:,0], d_theta[:,1], s=5, color=colors[k])
+
+    # draw part with mean transformation
+    thetaMu = m.karcher(theta[:,k])
+    T_obj_part = thetaMu
+    zero = np.zeros(o.dy)
+    yMu = TransformPointsNonHomog(T_obj_part, zero)
+    R = T_obj_part[:-1,:-1]
+    ySig = R.dot(E[k]).dot(R.T)
+    plt.plot( *du.stats.Gauss2DPoints(yMu, ySig, deviations=1.25), c=colors[k],
+      linestyle='--' )
+
+
+
+  # invisibly plot observations to set scale
+  t = 0
+  yObj_t = TransformPointsNonHomog(m.inv(x[t]), y[t])
+  plt.scatter(yObj_t[:,0], yObj_t[:,1], s=0)
+  plt.gca().set_aspect('equal', 'box')
+  plt.gca().set_xticks([])
+  plt.gca().set_yticks([])
+  plt.gca().invert_yaxis()
+  plt.title('Part Offset Posterior')
+  plt.savefig('posterior.png', dpi=300, bbox_iches='tight')
+  # plt.show()
+
+# def sampleTranslationOmega(o, y_k, x, omega_k, theta_k, E_k, W_k, **kwargs):
+#   r''' Sample translation component d_x_t of x_t, allowing for correlation.
+#
+#   INPUT
+#     o (argparse.Namespace): Algorithm options
+#     y_k (list of ndarray, [ [N_{kk}, dy], ... ]): Observations associated to part k
+#     x (list of ndarray, [ [dxGm], ... ]): Object transformations
+#     theta_k (list of ndarray, [ [dxGm], ... ]): Part k transformations
+#     E_k (ndarray, [dy, dy]): Part k Local Observation Noise Covs
+#     W_k (ndarray, [dxA, dxA]): Canonical Part Configuration Cov
+#     omega_k (ndarray, [dxGm]): Contains valid rotation sample of omega_k
+#
+#   KEYWORD INPUTS
+#     returnMuSigma (bool): Return mu, Sigma rather than sample
+#
+#   OUTPUT
+#     d_omega_k (ndarray, [dy,]): Sampled canonical part k translation
+#   '''
+#   m = getattr(lie, o.lie)
+#   T = len(y_k)
+#
+#   R_omega_k, _ = m.Rt(omega_k)
+#   
+#   # get mu, Sigma of d_omega_k
+#   V_omega_k, x2 = m.getVi(omega_k, return_phi=True)
+#   if o.lie == 'se2': x2 = np.array([x2])
+#   H = V_omega_k
+#   u = np.zeros(o.dxA)
+#   b = np.zeros(o.dy)
+#   mu, Sigma = inferNormalConditional(x2, H, b, u, W_k)
+#   Sigma_inv = np.linalg.inv(Sigma)
+#
+#   
+#   for t in range(T):
+#     Nk = len(y_k[t])
+#     if Nk == 0: continue
+#     ytkObj = TransformPointsNonHomog(m.inv(x[t]), y_k[t])
+#     
+#     R_theta_tk, d_theta_tk = m.Rt(theta_k[t])
+#     R2 = R_omega_k @ R_theta_tk
+#     obsCov = R2 @ E_k @ R2.T
+#     obsCov_inv = R2 @ np.linalg.inv(E_k) @ R2.T
+#     bias = R_omega_k @ d_theta_tk
+#     # bias = np.zeros(o.dy)
+#
+#     SigmaNew_inv = Sigma_inv + Nk*obsCov_inv
+#     SigmaNew = np.linalg.inv(SigmaNew_inv)
+#     muNew = SigmaNew.dot( Sigma_inv.dot(mu) + obsCov_inv.dot(
+#       np.sum(ytkObj, axis=0) - Nk*bias)
+#     )
+#     mu, Sigma, Sigma_inv = (muNew, SigmaNew, SigmaNew_inv)
+#
+#   if kwargs.get('returnMuSigma', False): return mu, Sigma
+#   else: return mvn.rvs(mu, Sigma)
 
 
 # todo: move to utils
@@ -2058,3 +2853,28 @@ def mvnL_logpdf(o, x, mu, Sigma):
   m = getattr(lie, o.lie)
   return mvn.logpdf(m.algi(m.logm(m.inv(mu).dot(x))), np.zeros(o.dxA), Sigma,
     allow_singular=True)
+
+def mvnL_rv(o, mu, Sigma):
+  m = getattr(lie, o.lie)
+  zero = np.zeros(o.dxA)
+  eps = m.expm(m.alg(mvn.rvs(zero, Sigma)))
+  return mu @ eps
+
+# def interp(o, a, b, lam):
+#   r''' Interpolate SE(D) elements a, b with parameter lambda. '''
+#   m = getattr(lie, o.lie)
+#   inner = lam * m.logm(m.inv(a) @ b)
+#   return a @ m.expm(inner)
+
+# def omegaObjective(o, theta_k, S_k, W, lam, w):
+#   m = getattr(lie, o.lie)
+#   zero = np.zeros(o.dxA)
+#   ll = mvn.logpdf(w, zero, W)
+#   omega = m.expm(m.alg(w))
+#
+#   T = len(theta_k)
+#   for t in range(1,T):
+#     mu = interp(o, theta_k[t-1], omega, lam)
+#     ll += mvnL_logpdf(o, theta_k[t], mu, S_k)
+#   return ll
+
