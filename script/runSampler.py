@@ -7,7 +7,7 @@ import os
 
 def main(args):
   # load previous sample
-  o, alpha, z, pi, theta, E, S, x, Q, mL, llInit, subsetIdx, dataset = \
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, llInit, subsetIdx, dataset = \
     SED.loadSample(args.initialSample)
 
   # recursively make output path ignoring if it's already been created
@@ -25,7 +25,8 @@ def main(args):
   ll = np.zeros(args.nSamples) 
 
   # rjmcmc moves (todo: make as args)
-  pBirth, pDeath, pSwitch = (0.1, 0.1, 0.0)
+  # pBirth, pDeath, pSwitch = (0.1, 0.1, 0.0)
+  pBirth, pDeath, pSwitch = (0.0, 0.0, 0.0)
 
   # rjmcmc proposal tracking
   nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
@@ -33,8 +34,8 @@ def main(args):
 
   sampleRng = range(args.firstSampleIndex, args.firstSampleIndex+args.nSamples)
   for cnt, nS in enumerate(sampleRng):
-    z, pi, theta, E, S, x, Q, mL, move, accept = SED.sampleRJMCMC(o, y,
-      alpha, z, pi, theta, E, S, x, Q, mL, pBirth, pDeath, pSwitch)
+    z, pi, theta, E, S, x, Q, omega, mL, move, accept = SED.sampleRJMCMC(o, y,
+      alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch)
     ll[cnt] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
 
     if move == 'birth':
