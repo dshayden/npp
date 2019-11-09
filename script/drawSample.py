@@ -5,20 +5,21 @@ import os
 import IPython as ip
 
 def main(args):
-  data = du.load(f'{args.datasetPath}/data')
-  yAll = data['y']
 
-  samples = du.GetFilePaths(f'{args.resultPath}', 'gz')
-  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, dataset = \
-    SED.loadSample(samples[args.sampleIdx])
+  if args.sampleIdx is not None:
+    samples = du.GetFilePaths(f'{args.resultPath}', 'gz')
+    o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+      SED.loadSample(samples[int(args.sampleIdx)])
+  else:
+    o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+      SED.loadSample(args.resultPath)
+
+  data = du.load(f'{datasetPath}/data')
+  yAll = data['y']
 
   T = len(z)
   K = theta.shape[1]
   
-  for t in range(T):
-    for k in range(K):
-      theta[t,k] = omega[k] @ theta[t,k]
-
   if args.no_resampleZ:
     if subsetIdx is not None:
       y = [yt[subsetIdx[t]] for t, yt in enumerate(yAll)]
@@ -32,15 +33,28 @@ def main(args):
 
     if args.maxZ: max=True
     else: max=False
-    z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], mL[t], max=max)
+    z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t], max=max)
       for t in range(T) ]
+
+  # omegaTheta
+  if args.omega:
+    theta = np.tile(omega, (T,1,1,1))
+  else:
+    for t in range(T):
+      for k in range(K):
+        theta[t,k] = omega[k] @ theta[t,k]
+
 
   if args.noE: E = None
   if args.noTheta: theta = None
   if args.noZ: z = None
 
-  if args.save: fnames = [ f'{args.save}/img-{t:05}.png' for t in range(T) ]
-  else: fnames = None
+  if args.save:
+    try: os.makedirs(args.save)
+    except: pass
+    fnames = [ f'{args.save}/img-{t:05}.png' for t in range(T) ]
+  else:
+    fnames = None
 
   def getImgs(path):
     imgPaths = du.GetImgPaths(imgPath)
@@ -50,24 +64,10 @@ def main(args):
       imgs = du.For(du.imread, imgPaths)
     return imgs
   
-  # if isdir(f'{args.datasetPath}/imgs'): imgPath = f'{args.datasetPath}/imgs'
-  # elif isdir(f'{args.datasetPath}/rgb'): imgPath = f'{args.datasetPath}/rgb'
-  # else: imgPath = ''
-  # if os.path.isdir(imgPath):
-  #   imgPaths = du.GetImgPaths(imgPath)
-  #   if len(imgPaths) > 100:
-  #     du.imread(imgPaths[0])
-  #     imgs = du.ParforT(du.imread, imgPaths)
-  #   else:
-  #     imgs = du.For(du.imread, imgPaths)
-  # else:
-  #   imgs = None
-
-
   # three cases
   #   se2, se3 + draw2d, se3
   if o.lie == 'se2':
-    imgPath = f'{args.datasetPath}/imgs'
+    imgPath = f'{datasetPath}/imgs'
     if isdir(imgPath): imgs = getImgs(imgPath)
     else: imgs = None
 
@@ -92,7 +92,7 @@ def main(args):
       for t in range(T): scenes[t].show()
 
   elif o.lie == 'se3' and args.draw_3d_as_2d:
-    imgPath = f'{args.datasetPath}/rgb'
+    imgPath = f'{datasetPath}/rgb'
     assert isdir(imgPath)
     imgs = getImgs(imgPath)
 
@@ -122,9 +122,8 @@ def main(args):
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')
-  parser.add_argument('datasetPath', type=str, help='dataset path')
-  parser.add_argument('resultPath', type=str, help='result path')
-  parser.add_argument('--sampleIdx', type=int, default=-1, help='sample index')
+  parser.add_argument('resultPath', type=str, help='result file / path')
+  parser.add_argument('--sampleIdx', help='sample index')
   parser.add_argument('--noE', action='store_true',
     help="don't draw part covariances")
   parser.add_argument('--noTheta', action='store_true',
@@ -135,6 +134,8 @@ if __name__ == "__main__":
     help="don't resample z")
   parser.add_argument('--maxZ', action='store_true',
     help="Take argmax assignments")
+  parser.add_argument('--omega', action='store_true',
+    help="draw canonical parts (static across time)")
   parser.add_argument('--draw_3d_as_2d', action='store_true',
     help="Draw 3d on image")
   parser.add_argument('--save', type=str, default='',

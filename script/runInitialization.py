@@ -4,6 +4,7 @@ import du, du.stats
 import lie
 from npp import SED, drawSED, icp
 import os
+np.set_printoptions(suppress=True, precision=4)
 import IPython as ip, sys
 
 def main(args):
@@ -26,8 +27,8 @@ def main(args):
   if args.se3: o = SED.opts(lie='se3')
   else: o = SED.opts(lie='se2')
   SED.initPriorsDataDependent(o, y,
-    dfQ=args.dfQ, rotQ=args.rotQ, dfS=args.dfS, rotS=args.rotS,
-    dfE=args.dfE, scale=args.scaleE, rotX=args.rotX
+    dfQ=args.dfQ, rotQ=args.rotQ, dfS=args.dfS, rotS=args.rotS, dfE=args.dfE,
+    scaleE=args.scaleE, rotX=args.rotX, rotOmega=args.rotOmega
   )
   x_ = SED.initXDataMeans(o, y)
   Q = SED.inferQ(o, x_)
@@ -35,21 +36,22 @@ def main(args):
   if args.tInit == -1: tInit = np.random.choice(range(T))
   else: tInit = args.tInit
 
-  # ip.embed()
-  theta_, E, S, z, pi = SED.initPartsAndAssoc(o, y[tInit:tInit+1], x_, args.alpha, mL,
-    maxBreaks=args.maxBreaks, nInit=args.nInit, nIter=args.nIter,
-    tInit=0, fixedBreaks=args.fixedBreaks
+  theta_, omega0, E, S, z, pi = SED.initPartsAndAssoc(o, y[tInit:tInit+1], x_,
+    args.alpha, mL, maxBreaks=args.maxBreaks, nInit=args.nInit,
+    nIter=args.nIter, tInit=args.tInit, fixedBreaks=args.fixedBreaks
   )
   K = len(pi) - 1
+  omegaTheta0_ = np.stack( [omega0[k] @ theta_[0,k] for k in range(K) ])
 
-  # get parts and global for all time
+
+  # get omegaTheta parts and global for all time
   theta = np.zeros((T, K) + o.dxGm)
-  theta[tInit] = theta_[0]
+  # theta[tInit] = theta_[0]
+  theta[tInit] = omegaTheta0_
   x = np.zeros((T,) + o.dxGm)
   x[tInit] = x_[0]
 
   m = getattr(lie, o.lie)
-
   def estimate_global_then_parts(tPrev, tNext):
     # 0 -> 1, 1 -> 2, ...
     yPrev, yNext = ( y[tPrev], y[tNext] )
@@ -66,12 +68,13 @@ def main(args):
     Q_t = icp.optimize_global(o, yNext, xPrev, thetaPrev, E, q_t=q_t0)
     x[tNext] = xNext = xPrev @ Q_t
     
-    # Estimate parts with body frame
+    # Estimate omegaTheta with body frame
     S_t = icp.optimize_local(o, yNext, xNext, thetaPrev, E, S)
     for k in range(K): theta[tNext,k] = theta[tPrev,k] @ S_t[k]
 
   # reverse direction
   # for (tInit, tInit-1) ... (1, 0)
+  du.tic()
   for tPrev, tNext in zip(reversed(ts[:tInit]), reversed(ts[1:tInit+1])):
     print(f'Optimizing Global then Local from time {tNext:03} to {tPrev:03}. ' + \
       f'Elapsed: {du.toc():.2f} seconds')
@@ -88,37 +91,24 @@ def main(args):
   if tInit > 0: estimate_global_then_parts(tInit-1, tInit)
   else: estimate_global_then_parts(0, 0)
 
-  # # for (tInit, tInit-1) ... (T-1, T)
-  # # re-estimate tInit from either direction
-  # # iterate through t, t+1 to get x, theta estimates
-  # du.tic()
-  # for tPrev, tNext in zip(ts[:-1], ts[1:]):
-  #   print(f'Optimizing Global then Local from time {tPrev:03} to {tNext:03}. ' + \
-  #     f'Elapsed: {du.toc():.2f} seconds')
-  #   estimate_global_then_parts(tPrev, tNext)
-  # # Specially handle t=0
-  # estimate_global_then_parts(0, 0)
+  # separate out omega and omega
+  omega = np.stack([ m.karcher(theta[:,k]) for k in range(K) ])
+  omegaInv = [ m.inv(omega[k]) for k in range(K) ]
+  for t in range(T):
+    for k in range(K):
+      theta[t,k] = omegaInv[k] @ theta[t,k]
 
   # Re-estimate z, pi; remove unused parts (if any)
   z = [ [] for t in range(T) ]
   for t in range(T):
-    z[t] = SED.inferZ(o, y[t], pi, theta[t], E, x[t], mL[t])
-  z, pi, theta, E, S = SED.consolidatePartsAndResamplePi(o, z, pi, args.alpha,
-    theta, E, S)
-
-  # compute omega
-  omega = np.stack([ m.karcher(theta[:,k]) for k in range(K) ])
-  omegaInv = [ m.inv(omega[k]) for k in range(K) ]
-
-  for t in range(T):
-    for k in range(K):
-      theta[t,k] = omegaInv[k] @ theta[t,k]
+    z[t] = SED.inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
+  z, pi, theta, omega, E, S = SED.consolidatePartsAndResamplePi(o, z, pi,
+    args.alpha, theta, omega, E, S)
 
   # Re-estimate Q, S, E
   Q = SED.inferQ(o, x)
   if K > 0: S = np.array([ SED.inferSk(o, theta[:,k]) for k in range(K) ])
   else: S = np.zeros((0, o.dxA, o.dxA))
-  # E = SED.inferE(o, x, theta, y, z)
   E = SED.inferE(o, x, theta, omega, y, z)
 
   # Compute log-likelihood
@@ -130,7 +120,6 @@ def main(args):
 
   # drawSED.draw(o, y=y, z=z, x=x, theta=theta, E=E)
   # plt.show()
-
   # ip.embed()
 
   
@@ -159,8 +148,10 @@ if __name__ == "__main__":
   parser.add_argument('--dfE', type=float, default=10.0, help='E prior DoF')
   parser.add_argument('--scaleE', type=float, default=1.0,
     help='Percentage of mean dataset variance for part covariance prior.')
-  parser.add_argument('--rotX', type=float, default=1.0,
+  parser.add_argument('--rotX', type=float, default=180.0,
     help='Expected initial body rotation (in degrees)')
+  parser.add_argument('--rotOmega', type=float, default=180.0,
+    help='Expected canonical part rotation (in degrees)')
 
   # Additional arguments
   parser.add_argument('--mL', type=float, default=-14.0,

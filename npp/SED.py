@@ -171,6 +171,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
 
   OUTPUT
     theta (ndarray, [T, K, dxA]): K-Part Local dynamic.
+    omega
     E (ndarray, [K, dxA, dxA]): K-Part Local Extent
     S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
     z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
@@ -316,7 +317,7 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
 
   return theta, omega, E, S, z, pi
 
-def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
+def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, omega, mL_t):
   r''' Return time-t data log-likelihood, y_t | z_t, x_t, theta_t, E
 
   INPUT
@@ -326,6 +327,7 @@ def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
     x_t (ndarray, dxGm): Current global latent dynamic, time t
     theta_t (ndarray, [K, dxGm]): Part Dynamics, time t
     E (ndarray, [K, dy, dy]): Part Local Observation Noise Covs
+    omega
     mL_t (ndarray, [N_t,]): marginal LL
 
   OUTPUT
@@ -342,7 +344,8 @@ def logpdf_data_t(o, y_t, z_t, x_t, theta_t, E, mL_t=None):
     Nk = np.sum(z_tk)
     if Nk == 0: continue
     y_tk_world = y_t[z_tk]
-    T_part_world = m.inv( x_t.dot(theta_t[k]) )
+    # T_part_world = m.inv( x_t.dot(theta_t[k]) )
+    T_part_world = m.inv( x_t @ omega[k] @ theta_t[k] )
     y_tk_part = TransformPointsNonHomog(T_part_world, y_tk_world)
     ll += np.sum(mvn.logpdf(y_tk_part, zeroObs, E[k], allow_singular=True))
 
@@ -448,7 +451,15 @@ def logpdf_theta_tk(o, theta_tk, theta_tminus1_k, Sk):
   OUTPUT
     ll (float): log-likelihood
   '''
-  return mvnL_logpdf(o, theta_tk, theta_tminus1_k, Sk)
+  m = getattr(lie, o.lie)
+  mRot = getattr(lie, o.lieRot)
+  R_cur, d_cur = m.Rt(theta_tk)
+  R_prev, d_prev = m.Rt(theta_tminus1_k)
+  phi = np.atleast_1d(mRot.algi(mRot.logm(R_prev.T @ R_cur)))
+  m_t = o.Bi @ (d_cur - o.A @ d_prev)
+  val = np.concatenate((m_t, phi))
+  return mvn.logpdf(val, o.zeroAlgebra, Sk)
+  # return mvnL_logpdf(o, theta_tk, theta_tminus1_k, Sk)
 
 def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL):
   r''' Calculate joint log-likelihood of below:
@@ -482,32 +493,37 @@ def logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL):
   # z, pi | alpha
   ll += logpdf_assoc(o, z, pi, alpha)
 
-  # good up to here
-
   # time-dependent
   ## y | z, theta, x, E
-  if omega is None:
-    ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
-      for t in range(T) ])
-  else:
-    # make simulated parts
-    for t in range(T):
-      theta_t = np.stack([ omega[k] @ theta[t,k] for k in range(K) ])
-      ll += np.sum(logpdf_data_t(o, y[t], z[t], x[t], theta_t, E, mL[t]))
+
+  ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, omega, mL[t])
+    for t in range(T) ])
+
+  # if omega is None:
+  #   ll += np.sum( [logpdf_data_t(o, y[t], z[t], x[t], theta[t], E, mL[t])
+  #     for t in range(T) ])
+  # else:
+  #   # make simulated parts
+  #   for t in range(T):
+  #     theta_t = np.stack([ omega[k] @ theta[t,k] for k in range(K) ])
+  #     ll += np.sum(logpdf_data_t(o, y[t], z[t], x[t], theta_t, E, mL[t]))
   
-  if omega is not None:
-    I = np.eye(o.dy+1)
-    cov = 1e6 * np.eye(o.dxA)
-    ll += np.sum( [ mvnL_logpdf(o, omega[k], I, cov) for k in range(K) ] )
+  # add omega prior here
+
+  # if omega is not None:
+  #   I = np.eye(o.dy+1)
+  #   cov = 1e6 * np.eye(o.dxA)
+  #   ll += np.sum( [ mvnL_logpdf(o, omega[k], I, cov) for k in range(K) ] )
+  ll += np.sum( [ mvnL_logpdf(o, omega[k], *o.H_omega[1:]) for k in range(K) ] )
+
 
   ## x | Q, H_x
   ll += logpdf_x_t(o, x[1], o.H_x[1], o.H_x[2])
-
   ll += np.sum( [logpdf_x_t(o, x[t], x[t-1], Q) for t in range(1,T)] )
 
   ## theta | S, H_theta
   for k in range(K):
-    ll += logpdf_theta_tk(o, theta[0,k], o.H_theta[1], o.H_theta[2])
+    ll += logpdf_theta_tk(o, theta[0,k], o.IdentityTransform, S[k])
     ll += np.sum( [logpdf_theta_tk(o, theta[t,k], theta[t-1,k], S[k])
       for t in range(1,T)] )
 
@@ -932,6 +948,7 @@ def inferZ(o, y_t, pi, theta_t, E, x_t, omega, mL_t, **kwargs):
   z[z==K] = -1
   return z
 
+# not currently being called; keep around though
 def getComponentCounts(o, z_t, pi):
   r''' Count number of observations associated to each component.
 
@@ -951,66 +968,8 @@ def getComponentCounts(o, z_t, pi):
     Nk[uni] = c
   return Nk
 
-# not being called anymore, todo: delete and refactor tests
-def consolidateExtantParts(o, z, pi, theta, E, S, **kwargs):
-  r''' Remove parts with no associations, renumber existing parts to 0..(K-1).
-
-  After calling this, pi is no longer valid. Must run inferPi.
-
-  INPUT
-    o (argparse.Namespace): Algorithm options
-    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
-    pi (ndarray, [K+1,]): stick-breaking weights.
-    theta (ndarray, [T, K,] + o.dxGm): K-Part Local dynamic.
-    E (ndarray, [K, dy, dy]): K-Part Local Extent
-    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
-
-  KEYWORD INPUT
-    Nk (ndarray, [K+1,]): Pre-computed counts
-    return_alive (bool): Return boolean array of which components survived.
-
-  OUTPUT
-    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Relabeled assoc.
-    theta (ndarray, [T, K', dxA]): K'-Part Local dynamic.
-    E (ndarray, [K', dxA, dxA]): K'-Part Local Extent
-    S (ndarray, [K', dxA, dxA]): K'-Part Local Dynamic
-  '''
-  K, T = ( len(pi)-1, len(z) )
-  Nk = kwargs.get('Nk', np.sum(
-    [ getComponentCounts(o, z[t], pi) for t in range(T) ],
-    axis=0
-  ))
-  # last entry of Nk is the number of unassigned observations
-
-  # nonzero(Nk) gives the indices of nonzero elements
-  missing = np.setdiff1d(range(K), np.nonzero(Nk)[0])
-  uniq = np.setdiff1d(range(K), missing)
-
-  if len(missing) > 0:
-    # establish relabeling
-    mapping = np.arange(K)
-    for m in missing: mapping[m] = -1
-    alive = mapping >= 0
-    mapping[alive] = np.arange(len(uniq))
-
-    # relabel z
-    z_ = [ -1*np.ones_like(z[t]) for t in range(T) ]
-    for k in uniq:
-      for t in range(T):
-        z_[t][z[t]==k] = mapping[k]
-
-    # reorder parts
-    theta = theta[:, alive]
-    E = E[alive]
-    S = S[alive]
-    
-  else:
-    alive = np.ones(K, dtype=np.bool)
-    z_ = z
-
-  if kwargs.get('return_alive', False): return z_, theta, E, S, alive
-  else: return z_, theta, E, S
-
+# not currently being called; keep around though
+# Note: needs to be updated with omega
 def mergeComponents(o, theta, E, S, theta_star, E_star, S_star):
   """ Merge components (theta, E, S) and (theta_star, E_star, S_star)
   
@@ -1256,6 +1215,7 @@ def sampleKPartsFromPrior(o, T, K):
     theta = np.zeros( (_theta.shape[0], 0, _theta.shape[1]) )
   return theta, E, S
 
+# not updated for omega
 def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
   r''' Given x, Monte Carlo estimate log marginal likelihood of each y_{tn}
 
@@ -1399,7 +1359,7 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
   for t in range(T):
     for k in range(K):
       # sample theta_tk
-      if t==0: thetaPrev, SPrev = ( o.IdentityTranform, S[k] )
+      if t==0: thetaPrev, SPrev = ( o.IdentityTransform, S[k] )
       else: thetaPrev, SPrev = ( theta[t-1,k], S[k] )
       if t==T-1: thetaNext, SNext = ( None, None )
       else: thetaNext, SNext = ( theta[t+1,k], S[k] )
@@ -1456,11 +1416,12 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
 
-  z, pi, theta, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha, theta,
-    E, S)
+  z, pi, theta, omega, E, S = consolidatePartsAndResamplePi(o, z, pi, alpha,
+    theta, omega, E, S)
+
   K = len(pi) - 1
 
-  # sample E, S, Q
+  # sample S, Q
   if not dontSampleX: Q = inferQ(o, x)
 
   if K > 0: S = np.array([ inferSk(o, theta[:,k]) for k in range(K) ])
@@ -1469,8 +1430,8 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
   # sample omega
   R_omega = omega[:,:o.dy,:o.dy]
   omega = sampleOmega(o, y, z, x, theta, E, R_omega)
-  # todo: sample omega rotation
 
+  # sample E
   E = inferE(o, x, theta, omega, y, z)
 
   # compute log-likelihood
@@ -1656,7 +1617,7 @@ def try_switch(o, y, z, x, theta, E, S, Q, alpha, pi, mL, ks=None):
     return False, z, x, theta, E, S, Q, alpha, pi, mL
 
 
-def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
+def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL, pBirth, pDeath):
   # p(new)   g(old | new)   
   # ------ * ------------ * Jacobian
   # p(old)   g(new | old)
@@ -1672,16 +1633,15 @@ def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
   beta = Be.rvs(1,1)
   E_k = np.diag(np.diag(iw.rvs(*o.H_E[1:])))
   S_k = iw.rvs(*o.H_S[1:])
-  theta1_rv_param = (m.algi(m.logm(o.H_theta[1])), o.H_theta[2])
-  theta1_rv = mvn.rvs(*theta1_rv_param)
-  theta1_ = m.expm(m.alg(theta1_rv))
+
+  omega_k = mvnL_rv(o, *o.H_omega[1:])
 
   ## proposal logpdf 
   g_new_old = np.log(pBirth)
   g_new_old += Be.logpdf(beta, 1, 1)
   g_new_old += iw.logpdf(E_k, *o.H_E[1:])
   g_new_old += iw.logpdf(S_k, *o.H_S[1:])
-  g_new_old += mvn.logpdf(theta1_rv, *theta1_rv_param)
+  g_new_old += mvnL_logpdf(o, omega_k, *o.H_omega[1:])
 
   # log Jacobian
   logJ = np.log(pi[-1])
@@ -1692,20 +1652,21 @@ def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
   pi_ = np.concatenate(( pi[:-1], np.array([pi_k, pi_inf]) ))
   E_ = np.concatenate((E, E_k[np.newaxis]), axis=0)
   S_ = np.concatenate((S, S_k[np.newaxis]), axis=0)
+  omega_ = np.concatenate((omega, omega_k[np.newaxis]), axis=0)
   theta_ = np.concatenate((
-      theta,
-      np.tile( theta1_[np.newaxis, np.newaxis], [T, 1, 1, 1] )
-    ), axis=1)
+    theta,
+    np.tile(o.IdentityTransform[np.newaxis, np.newaxis], (T, 1, 1, 1))
+  ), axis=1)
 
   # resample labels z[t] as Gibbs-within-Metropolis step
   # Note: this doesn't figure into ratio because all involved terms cancel
-  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], mL[t]) for t in range(T) ]
+  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], omega_, mL[t]) for t in range(T) ]
 
   # p(new)
-  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, mL)
+  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL)
 
   # p(old)
-  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
 
   logRatio = p_new + g_old_new + logJ - p_old - g_new_old
   # print(f'BIRTH logRatio: {logRatio:.2f}')
@@ -1716,11 +1677,11 @@ def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath):
 
   # accept / reject
   if logRatio >= 0 or np.random.rand() < np.exp(logRatio):
-    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, mL
+    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL
   else:
-    return False, z, x, theta, E, S, Q, alpha, pi, mL
+    return False, z, x, theta, E, S, Q, alpha, pi, omega, mL
 
-def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
+def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL, pDeath, pBirth):
   T = len(y)
   K_old = len(pi) - 1
 
@@ -1729,13 +1690,16 @@ def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
 
   # deterministic transformation
   newIdx = np.setdiff1d(np.arange(K_old+1), C)
-  theta_, E_, S_ = ( theta[:,newIdx[:-1]], E[newIdx[:-1]], S[newIdx[:-1]] )
+
+  omega_ = omega[newIdx[:-1]]
+  theta_, E_, S_ = (  theta[:,newIdx[:-1]], E[newIdx[:-1]], S[newIdx[:-1]] )
   pi_ = pi[newIdx]
   pi_[-1] += pi[C]  ## add deleted weight to unassigned
 
   # resample labels z[t] as Gibbs-within-Metropolis step
   # Note: this doesn't figure into ratio because all involved terms cancel
-  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], mL[t]) for t in range(T) ]
+  z_ = [ inferZ(o, y[t], pi_, theta_[t], E_, x[t], omega_, mL[t])
+    for t in range(T) ]
 
   # construct ratio
   ## g(old | new) : reverse birth move
@@ -1744,18 +1708,19 @@ def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
   g_old_new += Be.logpdf(beta_, 1, 1)
   g_old_new += iw.logpdf(E[C], *o.H_E[1:])
   g_old_new += iw.logpdf(S[C], *o.H_S[1:])
-  g_old_new += mvnL_logpdf(o, theta[0,C], *o.H_theta[1:])
+  g_old_new += mvnL_logpdf(o, omega[C], *o.H_omega[1:])
 
   ## g(new | old) : death move
   g_new_old = np.log(pDeath) + np.log(1 / K_old)
+  # g_new_old += mvnL_logpdf(o, omega[C], *o.H_omega[1:])
 
   logJ = -np.log(pi[-1])
 
   # p(new)
-  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, mL)
+  p_new = logJoint(o, y, z_, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL)
 
   # p(old)
-  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
 
   logRatio = p_new + g_old_new + logJ - p_old - g_new_old
   # print(f'DEATH logRatio: {logRatio:.2f}')
@@ -1766,9 +1731,9 @@ def try_death(o, y, z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth):
 
   # accept / reject
   if logRatio >= 0 or np.random.rand() < np.exp(logRatio):
-    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, mL
+    return True, z_, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL
   else:
-    return False, z, x, theta, E, S, Q, alpha, pi, mL
+    return False, z, x, theta, E, S, Q, alpha, pi, omega, mL
 
 def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch, **kwargs):
   # RJMCMC birth/death 
@@ -1791,11 +1756,11 @@ def sampleRJMCMC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeat
 
   move = du.stats.catrnd(rjmcmc_probs[np.newaxis])[0]
   if moves[move] == 'birth':
-    accept, z, x, theta, E, S, Q, alpha, pi, mL = try_birth(o, y,
-      z, x, theta, E, S, Q, alpha, pi, mL, pBirth, pDeath)
+    accept, z, x, theta, E, S, Q, alpha, pi, omega, mL = try_birth(o, y,
+      z, x, theta, E, S, Q, alpha, pi, omega, mL, pBirth, pDeath)
   elif moves[move] == 'death': # death
-    accept, z, x, theta, E, S, Q, alpha, pi, mL = try_death(o, y,
-      z, x, theta, E, S, Q, alpha, pi, mL, pDeath, pBirth)
+    accept, z, x, theta, E, S, Q, alpha, pi, omega, mL = try_death(o, y,
+      z, x, theta, E, S, Q, alpha, pi, omega, mL, pDeath, pBirth)
   elif moves[move] == 'switch':
     import random
     combs = list(itertools.combinations(range(K), 2))

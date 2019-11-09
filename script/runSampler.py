@@ -26,7 +26,8 @@ def main(args):
 
   # rjmcmc moves (todo: make as args)
   # pBirth, pDeath, pSwitch = (0.1, 0.1, 0.0)
-  pBirth, pDeath, pSwitch = (0.0, 0.0, 0.0)
+  # pBirth, pDeath, pSwitch = (0.0, 0.0, 0.0)
+  pBirth, pDeath, pSwitch = (args.pBirth, args.pDeath, args.pSwitch)
 
   # rjmcmc proposal tracking
   nBirthProp, nBirthAccept, nDeathProp, nDeathAccept = (0, 0, 0, 0)
@@ -36,7 +37,7 @@ def main(args):
   for cnt, nS in enumerate(sampleRng):
     z, pi, theta, E, S, x, Q, omega, mL, move, accept = SED.sampleRJMCMC(o, y,
       alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch)
-    ll[cnt] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, mL)
+    ll[cnt] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
 
     if move == 'birth':
       nBirthProp += 1
@@ -55,8 +56,10 @@ def main(args):
 
     if cnt % args.saveEvery == 0:
       filename = f'{args.outdir}/sample-{nS:08}'
-      SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, mL,
+      SED.saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, omega, mL,
         ll[cnt], subsetIdx, dataset)
+
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')
@@ -67,6 +70,14 @@ if __name__ == "__main__":
     help='interval to save samples')
   parser.add_argument('--firstSampleIndex', type=int, default=1,
     help='first sample index, this number given to first saved sample')
+
+  parser.add_argument('--pBirth', type=float, default=0.0,
+    help='Birth move probability')
+  parser.add_argument('--pDeath', type=float, default=0.0,
+    help='Death move probability')
+  parser.add_argument('--pSwitch', type=float, default=0.0,
+    help='Switch move probability')
+
   parser.add_argument('--silent', action='store_true',
     help="don't print sampler status")
 

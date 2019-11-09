@@ -148,11 +148,11 @@ def testSimpleInit():
   SED.initPriorsDataDependent(o, y)
 
   x = SED.initXDataMeans(o, y)
-  x = x_
+  # x = x_
 
   Q = SED.inferQ(o, x)
-  # tInit = np.random.choice(range(T))
-  tInit = 0
+  tInit = np.random.choice(range(T))
+  # tInit = 0
 
   alpha = 0.1
   theta, omega, E, S, z, pi = SED.initPartsAndAssoc(o, y, x, alpha, mL,
