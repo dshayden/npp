@@ -192,10 +192,18 @@ def initPartsAndAssoc(o, y, x, alpha, mL, **kwargs):
   nInit = kwargs.get('nInit', 1)
   nIter = kwargs.get('nIter', 100)
 
+  # todo: add noisy kwarg
   if not kwargs.get('fixedBreaks', False):
     # nonparametric init
-    bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
-      weight_concentration_prior=alpha)
+    # if o.lie == 'se3' and kwargs.get('noisy', False):
+    if o.lie == 'se3':
+      bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
+        weight_concentration_prior=alpha, covariance_prior=np.cov(yObj[tInit].T)*20,
+        init_params='random'
+      )
+    else:
+      bgmm = dpgmm(maxBreaks, n_init=nInit, max_iter=nIter,
+        weight_concentration_prior=alpha)
   else:
     # parametric init
     bgmm = gmm(maxBreaks, n_init=nInit, max_iter=nIter)
@@ -659,6 +667,8 @@ def thetaTranslationDynamicsPosterior(o, R_U, prevU, prevS, **kwargs):
   mu, Sigma = inferNormalConditional(phi, eye, zero,
     jointMu, jointSigma)
 
+  # def inferNormalConditional(x2, H, b, u, S):
+
   # handle future or return
   nextU = kwargs.get('nextU', None)
   if nextU is None: return mu, Sigma
@@ -905,6 +915,75 @@ def sampleRotation(o, ys, d_U, lhs, rhs, E, prevU, prevS, **kwargs):
   R_U, _ = m.Rt(U)
   return R_U
 
+def multi_inferZ(o, y_t, pi, theta_t, E, x_t, omega, mL_t, **kwargs):
+  r''' Sample z_{tn} | y_{tn}, pi, theta_t, E
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y_t (ndarray, [N_1, o.dy]): Observations at time t
+    pi (length J list of ndarray, [K+1,]): Local association priors
+    theta_t (length J list of ndarray, [K, [o.dxGm]]): K-Part local dynamics
+    E (length J list of ndarray, [K, o.dy, o.dy]): K-Part observation covariance
+    x_t (length j list ndarray, o.dxGm): Global latent dynamic.
+    omega ( length j list of ...
+    mL_t (ndarray, [N_t,]): marginal LL
+
+  KEYWORD INPUT
+    max (bool): Max assignment rather than sampled assignment
+
+  OUTPUT
+    z (ndarray, [N_1,]): Associations
+  '''
+  m = getattr(lie, o.lie)
+  J = len(pi)
+
+  K = np.array([ theta_t[j].shape[0] for j in range(J) ])
+  N = y_t.shape[0]
+  for j in range(J):
+    assert K[j]+1 == len(pi[j]), 'pi must have K+1 components'
+    assert np.all(pi[j] > 0), 'pi must have all positive elements.'
+    assert np.isclose(np.sum(pi[j]), 1.0), 'pi must sum to 1.0'
+
+  # j-length list of 
+  log_pz = [ np.zeros((N, K[j]+1)) for j in range(J) ]
+  zero = np.zeros(o.dy)
+  logPi = [ np.log(pi[j]) for j in range(J) ]
+  for j in range(J):
+    for k in range(K[j]):
+      # lhs = m.inv(x_t[j] @ theta_t[j][k])
+      lhs = m.inv(x_t[j] @ omega[j][k] @ theta_t[j][k])
+      yPart = TransformPointsNonHomog(lhs, y_t)
+      # try without pi
+      # log_pz[j][:,k] = logPi[j][k] + mvn.logpdf(yPart, zero, E[j][k], allow_singular=True)
+      log_pz[j][:,k] = mvn.logpdf(yPart, zero, E[j][k], allow_singular=True)
+  log_pz[j][:,-1] = logPi[j][-1] + mL_t
+
+  log_pzAug = np.concatenate([log_pz[j][:,:-1] for j in range(J)], axis=1)
+
+  # let's try removing base measure
+  # log_pzAug = np.concatenate( (log_pzAug, (logPi[j][-1] + mL_t)[:,np.newaxis]), axis=1)
+  pzAug = np.exp( log_pzAug - logsumexp(log_pzAug, axis=1, keepdims=True) )
+  if kwargs.get('max', False): zAug = np.argmax(pzAug, axis=1)
+  else: zAug = du.stats.catrnd(pzAug)
+  
+  # any association to K goes to base measure, set to -1
+  zAug[zAug==np.sum(K)] = -1
+
+  
+  # return J-length list of z
+  csK = np.cumsum(K)
+  z = [ -1*np.ones(N, dtype=np.int) for j in range(J) ]
+  for j in range(J):
+    if j == 0: lower = 0
+    else: lower = csK[j-1]
+    
+    upper = lower + K[j]
+
+    idx = np.logical_and(lower <= zAug, zAug < upper)
+    z[j][idx] = zAug[idx] - lower
+
+  return z
+
 
 def inferZ(o, y_t, pi, theta_t, E, x_t, omega, mL_t, **kwargs):
   r''' Sample z_{tn} | y_{tn}, pi, theta_t, E
@@ -1006,6 +1085,7 @@ def inferPi(o, Nk, alpha):
   cnts = Nk.astype(np.float)
 
   # todo: check if alpha should be added even if there are unassigned counts.
+  # not that it really makes a difference
   if cnts[-1] == 0: cnts[-1] = alpha
   pi = dirichlet.rvs(cnts)[0]
 
@@ -1260,7 +1340,7 @@ def logMarginalPartLikelihoodMonteCarlo(o, y, x, theta, E, S):
   return mL
 
 def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll,
-  subsetIdx=None, dataset=None):
+  subsetIdx=None, dataset=None, **kwargs):
   r''' Save sample to disk.
 
   INPUT
@@ -1283,6 +1363,10 @@ def saveSample(filename, o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll,
   '''
   dct = dict(o=o, alpha=alpha, z=z, pi=pi, theta=theta, E=E, S=S, x=x, Q=Q,
     omega=omega, mL=mL, ll=ll, subsetIdx=subsetIdx, dataset=dataset)
+
+  extra = kwargs.get('extra', None)
+  if extra is not None: dct['extra'] = extra
+
   du.save(filename, dct)
 
 def loadSample(filename):
@@ -1313,6 +1397,228 @@ def loadSample(filename):
      d['Q'], d['omega'], d['mL'], d['ll'])
   subsetIdx, dataset = ( d.get('subsetIdx', None), d.get('dataset', None) )
   return o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, dataset
+
+def multiRestrictedSampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
+  r''' Perform restricted gibbs ssampling pass with J targets. Input values will be overwritten.
+
+    This only samples new values for x, theta and z. Use is intended for additional videos.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    alpha (float): Concentration parameter, default 1e-3
+    z (length J list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (length J list of ndarray, [T, K+1]): Local association priors for each time
+    theta (length J list of ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (length J list of ndarray, [K, dy, dy: K-Part Local Extent
+    S (length J list of ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (length J list of ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (length J list of ndarray, [K, dxA, dxA]): Latent Dynamic
+    omega (length J list of ndarray, [K,] + dxGm): K-Part Canonical dynamic.
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+
+  KEYWORD INPUT
+    dontSampleX (bool): Don't allow x resampling
+    dontSampleTheta (bool): Don't allow theta resampling
+
+  OUTPUT
+    z (length J list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    theta (length J list of ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    x (length J list of ndarray, [T,] + dxGm): Global latent dynamic.
+    ll (float): joint log-likelihood
+  '''
+  m = getattr(lie, o.lie)
+  # T, K = ( len(y), len(pi)-1 )
+  T = len(y)
+  J = len(z)
+  dontSampleX = kwargs.get('dontSampleX', False)
+  dontSampleTheta = kwargs.get('dontSampleTheta', False)
+
+  for t in range(T):
+    for j in range(J):
+      K = len(pi[j]) - 1
+      for k in range(K):
+        if dontSampleTheta: break
+        
+        # sample theta_tk
+        if t==0: thetaPrev, SPrev = ( o.IdentityTransform, S[j][k] )
+        else: thetaPrev, SPrev = ( theta[j][t-1,k], S[j][k] )
+        if t==T-1: thetaNext, SNext = ( None, None )
+        else: thetaNext, SNext = ( theta[j][t+1,k], S[j][k] )
+
+        y_tk = y[t][z[j][t]==k]
+        R_theta_tk = m.Rt(theta[j][t,k])[0]
+        rhs = o.IdentityTransform
+        lhs = x[j][t] @ omega[j][k]
+
+        # sample translation | rotation
+        mu, Sigma = thetaTranslationDynamicsPosterior( o, R_theta_tk, thetaPrev,
+          SPrev, nextU=thetaNext, nextS=SNext)
+        mu, Sigma = translationObservationPosterior(o, y_tk, R_theta_tk,
+          lhs, rhs, E[j][k], mu, Sigma)
+        d_theta_tk = mvn.rvs(mu, Sigma)
+
+        R_theta_tk = sampleRotation(o, y_tk, d_theta_tk, lhs, rhs, E[j][k],
+          thetaPrev, SPrev, nextU=thetaNext, nextS=SNext, controlled=True)
+        
+        # set new sample
+        theta[j][t,k] = MakeRd(R_theta_tk, d_theta_tk)
+      # for k done
+
+      if not dontSampleX:
+        # sample x_t
+        if t==0: xPrev, QPrev = ( o.H_x[1], o.H_x[2] )
+        else: xPrev, QPrev = ( x[j][t-1], Q[j] )
+        if t==T-1: xNext, QNext = ( None, None )
+        else: xNext, QNext = ( x[j][t+1], Q[j] )
+
+        R_x_t = m.Rt(x[j][t])[0]
+        lhs = o.IdentityTransform
+
+        # sample translation | rotation
+        mu, Sigma = translationDynamicsPosterior(
+          o, R_x_t, xPrev, QPrev, nextU=xNext, nextS=QNext)
+        for k in range(K):
+          y_tk = y[t][z[j][t]==k]
+          rhs = omega[j][k] @ theta[j][t,k]
+
+          mu, Sigma = translationObservationPosterior(o, y_tk, R_x_t,
+            lhs, rhs, E[j][k], mu, Sigma)
+        d_x_t = mvn.rvs(mu, Sigma)
+        
+        # sample rotation | translation
+        ## gather all y_tk
+        yParts = tuple( y[t][z[j][t]==k] for k in range(K) )
+        EParts = tuple( E[j][k] for k in range(K) )
+        rhs = tuple( omega[j][k] @ theta[j][t,k] for k in range(K) )
+
+        R_x_t = sampleRotation(o, yParts, d_x_t, lhs, rhs, EParts,
+          xPrev, QPrev, nextU=xNext, nextS=QNext)
+
+        # set new sample -- when did this get deleted??
+        x[j][t] = MakeRd(R_x_t, d_x_t)
+
+    # sample z_t
+    theta_t_ = [ theta[j][t] for j in range(J) ]
+    x_t_ = [ x[j][t] for j in range(J) ]
+    zjts = multi_inferZ(o, y[t], pi, theta_t_, E, x_t_, omega, mL[t])
+    for j in range(J): z[j][t] = zjts[j]
+
+  # for t done
+
+  # compute log-likelihood
+  # ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
+  ll = 0.0
+
+  return z, theta, x, ll
+
+
+def restrictedSampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
+  r''' Perform restricted gibbs ssampling pass. Input values will be overwritten.
+
+    This only samples new values for x, theta and z. Use is intended for additional videos.
+
+  INPUT
+    o (argparse.Namespace): Algorithm options
+    y (list of ndarray, [ [N_1, dy], [N_2, dy], ..., [N_T, dy] ]): Observations
+    alpha (float): Concentration parameter, default 1e-3
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    pi (ndarray, [T, K+1]): Local association priors for each time
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    E (ndarray, [K, dy, dy: K-Part Local Extent
+    S (ndarray, [K, dxA, dxA]): K-Part Local Dynamic
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    Q (ndarray, [K, dxA, dxA]): Latent Dynamic
+    omega (ndarray, [K,] + dxGm): K-Part Canonical dynamic.
+    mL (list of ndarray, [N_1, ..., N_T]): Marginal Likelihoods
+
+  KEYWORD INPUT
+    dontSampleX (bool): Don't allow x resampling
+    dontSampleTheta (bool): Don't allow theta resampling
+
+  OUTPUT
+    z (list of ndarray, [ [N_1,], [N_2,], ..., [N_T,] ]): Associations
+    theta (ndarray, [T, K,] + dxGm): K-Part Local dynamic.
+    x (ndarray, [T,] + dxGm): Global latent dynamic.
+    ll (float): joint log-likelihood
+  '''
+  m = getattr(lie, o.lie)
+  T, K = ( len(y), len(pi)-1 )
+  dontSampleX = kwargs.get('dontSampleX', False)
+  dontSampleTheta = kwargs.get('dontSampleTheta', False)
+
+  for t in range(T):
+    for k in range(K):
+      if dontSampleTheta: break
+      
+      # sample theta_tk
+      if t==0: thetaPrev, SPrev = ( o.IdentityTransform, S[k] )
+      else: thetaPrev, SPrev = ( theta[t-1,k], S[k] )
+      if t==T-1: thetaNext, SNext = ( None, None )
+      else: thetaNext, SNext = ( theta[t+1,k], S[k] )
+
+      y_tk = y[t][z[t]==k]
+      R_theta_tk = m.Rt(theta[t,k])[0]
+      rhs = o.IdentityTransform
+      lhs = x[t] @ omega[k]
+
+      # sample translation | rotation
+      mu, Sigma = thetaTranslationDynamicsPosterior( o, R_theta_tk, thetaPrev,
+        SPrev, nextU=thetaNext, nextS=SNext)
+      mu, Sigma = translationObservationPosterior(o, y_tk, R_theta_tk,
+        lhs, rhs, E[k], mu, Sigma)
+      d_theta_tk = mvn.rvs(mu, Sigma)
+
+      R_theta_tk = sampleRotation(o, y_tk, d_theta_tk, lhs, rhs, E[k],
+        thetaPrev, SPrev, nextU=thetaNext, nextS=SNext, controlled=True)
+      
+      # set new sample
+      theta[t,k] = MakeRd(R_theta_tk, d_theta_tk)
+
+    if not dontSampleX:
+      # sample x_t
+      if t==0: xPrev, QPrev = ( o.H_x[1], o.H_x[2] )
+      else: xPrev, QPrev = ( x[t-1], Q )
+      if t==T-1: xNext, QNext = ( None, None )
+      else: xNext, QNext = ( x[t+1], Q )
+
+      R_x_t = m.Rt(x[t])[0]
+      lhs = o.IdentityTransform
+
+      # sample translation | rotation
+      mu, Sigma = translationDynamicsPosterior(
+        o, R_x_t, xPrev, QPrev, nextU=xNext, nextS=QNext)
+      for k in range(K):
+        y_tk = y[t][z[t]==k]
+        rhs = omega[k] @ theta[t,k]
+        # rhs = theta[t,k]
+
+        mu, Sigma = translationObservationPosterior(o, y_tk, R_x_t,
+          lhs, rhs, E[k], mu, Sigma)
+      d_x_t = mvn.rvs(mu, Sigma)
+      
+      # sample rotation | translation
+      ## gather all y_tk
+      yParts = tuple( y[t][z[t]==k] for k in range(K) )
+      EParts = tuple( E[k] for k in range(K) )
+      rhs = tuple( omega[k] @ theta[t,k] for k in range(K) )
+
+      R_x_t = sampleRotation(o, yParts, d_x_t, lhs, rhs, EParts,
+        xPrev, QPrev, nextU=xNext, nextS=QNext)
+
+      # set new sample -- when did this get deleted??
+      x[t] = MakeRd(R_x_t, d_x_t)
+
+    # sample z_t
+    z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
+
+  K = len(pi) - 1
+
+  # compute log-likelihood
+  ll = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
+
+  return z, theta, x, ll
+
 
 def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
   r''' Perform full gibbs ssampling pass. Input values will be overwritten.
@@ -1412,6 +1718,9 @@ def sampleStepFC(o, y, alpha, z, pi, theta, E, S, x, Q, omega, mL, **kwargs):
 
       R_x_t = sampleRotation(o, yParts, d_x_t, lhs, rhs, EParts,
         xPrev, QPrev, nextU=xNext, nextS=QNext)
+
+      # set new sample -- when did this get deleted??
+      x[t] = MakeRd(R_x_t, d_x_t)
 
     # sample z_t
     z[t] = inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
@@ -1615,6 +1924,25 @@ def try_switch(o, y, z, x, theta, E, S, Q, alpha, pi, mL, ks=None):
     return True, z_, x, theta_, E, S, Q, alpha, pi, mL
   else:
     return False, z, x, theta, E, S, Q, alpha, pi, mL
+
+
+def try_translateX(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL):
+  # reverse move is to set x to identity, z to base measure for all t
+  # both are 50/50 so this is symmetric move
+  T = len(y)
+  
+  # new x, z
+  x_ = initXDataMeans(o, y)
+  z_ = [ inferZ(o, y[t], pi, theta[t], E, x_[t], omega, mL[t]) for t in range(T) ]
+
+  p_new = logJoint(o, y, z_, x_, theta, E, S, Q, alpha, pi, omega, mL)
+  p_old = logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
+  logRatio = p_new - p_old
+
+  print(f'logRatio: {logRatio:.2f}, p_new: {p_new:.2f}, p_old: {p_old:.2f}')
+
+  if logRatio >= 0 or np.random.rand() < np.exp(logRatio): return True, z_, x_
+  else: return False, z, x
 
 
 def try_birth(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL, pBirth, pDeath):
@@ -2023,3 +2351,19 @@ def mvnL_rv(o, mu, Sigma):
   zero = np.zeros(o.dxA)
   eps = m.expm(m.alg(mvn.rvs(zero, Sigma)))
   return mu @ eps
+
+def mahal2(o, y, SigmaI):
+  """ Squared mahalanobis distance of N points to zero.
+
+  INPUT
+    y (ndarray, [N, D]): N points, D-dimensional. Can also just be [D,]
+    SigmaI (ndarray, [D, D]): Inverse covariance
+  
+  OUTPUT
+    dist2 (ndarray, [N,]): Squared mahalanobis distances
+  """
+  if y.ndim == 1:
+    val = np.einsum('nj,jk,nk->n', y[np.newaxis], SigmaI, y[np.newaxis])
+    return val.squeeze()
+  else:
+    return np.einsum('nj,jk,nk->n', y, SigmaI, y)

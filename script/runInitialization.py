@@ -36,13 +36,29 @@ def main(args):
   if args.tInit == -1: tInit = np.random.choice(range(T))
   else: tInit = args.tInit
 
+  ###
+  # yt = y[tInit]
+  # from mpl_toolkits.mplot3d import Axes3D
+  # fig = plt.figure()
+  # ax = fig.add_subplot(111, projection='3d')
+  # ax.scatter(yt[:,0], yt[:,1], yt[:,2], s=1)
+  # plt.show()
+  #
+  # ip.embed()
+  # sys.exit()
+  ###
+
+  # theta_, omega0, E, S, z, pi = SED.initPartsAndAssoc(o, y[tInit:tInit+1], x_,
+  #   args.alpha, mL, maxBreaks=args.maxBreaks, nInit=args.nInit,
+  #   nIter=args.nIter, tInit=args.tInit, fixedBreaks=args.fixedBreaks
+  # )
   theta_, omega0, E, S, z, pi = SED.initPartsAndAssoc(o, y[tInit:tInit+1], x_,
     args.alpha, mL, maxBreaks=args.maxBreaks, nInit=args.nInit,
-    nIter=args.nIter, tInit=args.tInit, fixedBreaks=args.fixedBreaks
+    nIter=args.nIter, fixedBreaks=args.fixedBreaks
   )
   K = len(pi) - 1
+  print(f'Initialized with {K} parts at time {tInit}')
   omegaTheta0_ = np.stack( [omega0[k] @ theta_[0,k] for k in range(K) ])
-
 
   # get omegaTheta parts and global for all time
   theta = np.zeros((T, K) + o.dxGm)

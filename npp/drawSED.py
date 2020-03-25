@@ -28,6 +28,7 @@ def draw_t_SE3(o, **kwargs):
     title: plot title name
     filename: save path if desired, else returns figure reference
     style: string for modifying plot style. Currently ignored.
+    noX: bool, default False
   """
   assert o.lie == 'se3'
   m = getattr(lie, o.lie)
@@ -65,10 +66,18 @@ def draw_t_SE3(o, **kwargs):
       # pc = tmu.ConstructPointCloud(y, zCols[z])
     # scene.add_geometry(pc)
 
+  # todo: add part majorAxix (60 / 20 / 2 / 0.2) as a parameter
+  # else: marmoset needs ~60 and articulated meshes need ~0.2
+
   x = kwargs.get('x', None)
-  if x is not None:
-    scene.add_geometry(tmu.MakeAxes(2.0, du.asShape(x, o.dxGm),
+  noX = kwargs.get('noX', None)
+  if x is not None and not noX:
+    scene.add_geometry(tmu.MakeAxes(0.2, du.asShape(x, o.dxGm),
       np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
+    # scene.add_geometry(tmu.MakeAxes(2.0, du.asShape(x, o.dxGm),
+    #   np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
+    # scene.add_geometry(tmu.MakeAxes(60.0, du.asShape(x, o.dxGm),
+    #   np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
 
   theta = kwargs.get('theta', None)
   if theta is not None and x is not None:
@@ -80,8 +89,11 @@ def draw_t_SE3(o, **kwargs):
 
       T_world_part = du.asShape(x, o.dxGm).dot(
         du.asShape(theta[k], o.dxGm))
+      
+      scene.add_geometry(tmu.MakeAxes(0.2, T_world_part, c, minor=0.01))
 
-      scene.add_geometry(tmu.MakeAxes(20.0, T_world_part, c, minor=0.01))
+      # scene.add_geometry(tmu.MakeAxes(20.0, T_world_part, c, minor=0.01))
+      # scene.add_geometry(tmu.MakeAxes(60.0, T_world_part, c, minor=0.01))
       # scene.add_geometry(tmu.MakeAxes(2.0, T_world_part, c, minor=0.01))
 
   E = kwargs.get('E', None)
@@ -96,8 +108,10 @@ def draw_t_SE3(o, **kwargs):
         du.asShape(theta[k], o.dxGm))
 
       # TODO: eigvals not sorted, this is probably bad idea
+      # ell = tmu.MakeEllipsoid(T_world_part,
+      #   np.sqrt(np.linalg.eigvals(E[k]))*2, c)
       ell = tmu.MakeEllipsoid(T_world_part,
-        np.sqrt(np.linalg.eigvals(E[k]))*2, c)
+        np.sqrt(np.linalg.eigvals(E[k]))*3, c)
       # setattr(ell, 'wire', True)
       scene.add_geometry(ell)
 
@@ -126,7 +140,11 @@ def draw_t_SE2(o, **kwargs):
     filename: save path if desired, else returns figure reference
     style: string for modifying plot style. Currently ignored.
     reverseY: boolean, default False
+    noX: boolean, default False
     img (ndarray, [nY, nX, 3]): image to draw on
+
+    linestyle (str): linestyle for x, theta arrows
+    deviations (float): deviations to draw E at
   """
   assert o.lie == 'se2'
   m = getattr(lie, o.lie)
@@ -136,6 +154,9 @@ def draw_t_SE2(o, **kwargs):
     zCols = du.diffcolors(100, bgCols=[[1,1,1],[0,0,0]])
 
   reverseY = kwargs.get('reverseY', False)
+  noX = kwargs.get('noX', False)
+  linestyle = kwargs.get('linestyle', '-')
+  deviations = kwargs.get('deviations', 1.25)
 
   img = kwargs.get('img', None)
   if img is None:
@@ -178,7 +199,7 @@ def draw_t_SE2(o, **kwargs):
 
   # both x, xTrue are black, need to handle linestyles
   x = kwargs.get('x', None)
-  if x is not None: m.plot(x, np.tile([0,0,0], [2,1]), l=10.0)
+  if x is not None and not noX: m.plot(x, np.tile([0,0,0], [2,1]), l=10.0, linestyle=linestyle)
 
   theta = kwargs.get('theta', None)
   if theta is not None and x is not None:
@@ -188,7 +209,7 @@ def draw_t_SE2(o, **kwargs):
     for k in range(K):
       if not isObserved[k]: continue
       T_world_part = x.dot(theta[k])
-      m.plot(T_world_part, np.tile(zCols[k], [2,1]), l=10.0)
+      m.plot(T_world_part, np.tile(zCols[k], [2,1]), l=10.0, linestyle=linestyle)
 
   zero = np.zeros(2)
   E = kwargs.get('E', None)
@@ -200,7 +221,7 @@ def draw_t_SE2(o, **kwargs):
       yMu = SED.TransformPointsNonHomog(T_world_part, zero)
       R = T_world_part[:-1,:-1]
       ySig = R.dot(E[k]).dot(R.T)
-      plt.plot( *du.stats.Gauss2DPoints(yMu, ySig, deviations=1.25), c=zCols[k] )
+      plt.plot( *du.stats.Gauss2DPoints(yMu, ySig, deviations=deviations), c=zCols[k], linestyle=linestyle)
 
   ax = plt.gca()
   xlim = kwargs.get('xlim', None)
@@ -280,6 +301,7 @@ def draw(o, **kwargs):
     no_parallel (bool): don't use parfor
     img (list of ndarray, [nY, nX, 3]): images to draw on
     reverseY (bool): reverse y axis orientation
+    noX (bool): don't draw x coordinate frame, even if provided
   """
   # time-varying
   y = kwargs.get('y', None)
@@ -293,6 +315,7 @@ def draw(o, **kwargs):
   no_extents = kwargs.get('no_extents', False)
   img = kwargs.get('img', None)
   reverseY = kwargs.get('reverseY', False)
+  noX = kwargs.get('noX', False)
 
   if x is None and y is None: return
 
@@ -334,7 +357,7 @@ def draw(o, **kwargs):
     def _draw_t(t):
       draw_t(o, x=x[t], theta=theta[t], y=y[t], title=title[t], z=z[t],
         img=img[t], zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style,
-        reverseY=reverseY)
+        reverseY=reverseY, noX=noX)
     du.ViewPlots(range(T), _draw_t)
   elif filename is None and o.lie == 'se3':
     def pFunc(o, x, theta, y, title, z, zCols, E, xlim, ylim, style):
@@ -345,7 +368,7 @@ def draw(o, **kwargs):
       #   zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
       from npp import drawSED, tmu
       scene = drawSED.draw_t(o, x=x, theta=theta, y=y, title=title, z=z,
-        zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style)
+        zCols=zCols, E=E, xlim=xlim, ylim=ylim, style=style, noX=noX)
       scene.set_camera()
       return scene
 
@@ -368,7 +391,7 @@ def draw(o, **kwargs):
       #   xlim=xlim, ylim=ylim, filename=filename, style=style)
 
       draw_t(o, x=x, theta=theta, y=y, title=title, z=z, img=img, zCols=zCols, E=E,
-        xlim=xlim, ylim=ylim, filename=filename, style=style, reverseY=reverseY)
+        xlim=xlim, ylim=ylim, filename=filename, style=style, reverseY=reverseY, noX=noX)
 
     pArgs = [ (o, x[t], theta[t], y[t], title[t], z[t], img[t], zCols, E, xlim,
       ylim, filename[t], style) for t in range(T) ]

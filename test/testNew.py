@@ -1,8 +1,11 @@
 import unittest
 import numpy as np
-from npp import SED, evalSED, drawSED as draw, icp
+from npp import SED, evalSED, drawSED as draw, icp, SED_tf
+from npp.SED_tf import np2tf
+
 from scipy.stats import multivariate_normal as mvn
 from scipy.stats import invwishart as iw
+from scipy.spatial.distance import mahalanobis
 import scipy.optimize as so
 import numdifftools as nd
 import lie
@@ -12,6 +15,63 @@ import IPython as ip, sys
 import scipy.linalg as sla
 import functools
 np.set_printoptions(suppress=True, precision=4)
+
+def testConditional():
+  D1 = 2
+  D2 = 3
+
+  C = iw.rvs(10, np.eye(D1))
+  Ci = np.linalg.inv(C)
+
+  u = mvn.rvs(np.zeros(D1))
+
+  mu = mvn.rvs(np.zeros(D1+D2))
+  mu1 = mu[:D1]
+  mu2 = mu[D1:]
+
+  Sigma = iw.rvs(20, np.eye(D1 + D2))
+  Sigma11 = Sigma[:D1,:D1]
+  Sigma12 = Sigma[:D1,D1:]
+  Sigma21 = Sigma[D1:,:D1]
+  Sigma22 = Sigma[D1:,D1:]
+
+  # x = mvn.rvs(mu, Sigma)
+  # x1 = x[:D1]
+  # x2 = x[D1:]
+  
+  # x1 | x2
+  Ci_Sigma11_CiT = Ci @ Sigma11 @ Ci.T
+  Ci_Sigma12 = Ci @ Sigma12
+  Ci_mu1_u = Ci @ (mu1 - u)
+  modifiedSigma = np.block([ [Ci_Sigma11_CiT, Ci_Sigma12], [Ci_Sigma12.T, Sigma22]])
+  modifiedMu = np.concatenate((Ci_mu1_u, mu2))
+
+  nSamples = 10000
+  # draw from (x1, x2) joint, get x1 marginal
+  x1x2 = mvn.rvs(modifiedMu, modifiedSigma, size=nSamples)
+  x1 = x1x2[:,:D1]
+
+  # draw from (Cx1 + u, x2) joint, get x1 marginal
+  Cx1_u_x2 = mvn.rvs(mu, Sigma, size=nSamples)
+  y = Cx1_u_x2[:,:D1]
+  x1_ = np.stack([ Ci @ (y[n] - u) for n in range(nSamples) ])
+
+  print(np.mean(x1,axis=0))
+  print(np.cov(x1.T))
+
+  print(np.mean(x1_,axis=0))
+  print(np.cov(x1_.T))
+
+  plt.scatter(*x1.T, s=1, color='b', alpha=0.5)
+  plt.scatter(*x1_.T, s=1, color='g', alpha=0.5)
+  plt.show()
+
+
+  # test: is the joint distribution of (x1, x2) with above modifications same as
+  # joint distribution of (C x1 + u)?
+  #   y = C x1 + u
+  #   x1 = Ci @ (y - u)
+
 
 def show(o, y, x, omega, theta, E, z, t):
   o = SED.opts(lie='se2')
@@ -108,6 +168,151 @@ def generateSyntheticK4(o, T, Nk=100):
     z[t] = np.concatenate(z[t])
 
   return y, z, x, omega, theta, Q, S, E
+
+def test_tf_mahal():
+  dy = 2
+  N = 50
+  y = mvn.rvs( np.zeros(dy), np.eye(dy), size=N )
+  mu = np.zeros(dy)
+
+  SigmaI = np.linalg.inv(iw.rvs(10, np.eye(dy)))
+  
+  mahal_tf = icp.mahalanobis2_tf( np2tf(y), np2tf(SigmaI) ).numpy()
+  
+  mahal_np = np.zeros(N)
+  for n in range(N):
+    mahal_np[n] = mahalanobis( y[n], mu, SigmaI ) ** 2
+
+  assert np.allclose(mahal_tf, mahal_np)
+
+def test_optimize_all2vec():
+  sample = 'omega/synthetic/se2_randomwalk3/002/init.gz'
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+    SED.loadSample(sample)
+  v = icp.all2vec(o, x, omega, theta)
+
+
+def test_optimize_all_synthetic():
+  sample = 'omega/synthetic/se2_randomwalk3/002/init.gz'
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+    SED.loadSample(sample) 
+
+  data = du.load(f'{datasetPath}/data')
+  yAll = data['y']
+  T = len(z)
+  K = theta.shape[1]
+  if subsetIdx is not None:
+    y = [yt[subsetIdx[t]] for t, yt in enumerate(yAll)]
+
+  basePath = 'optimize/synthetic/se2_randomwalk3/002'
+  def callback(s, v, cost, x, omega, theta):
+    z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
+      for t in range(T) ]
+    z, pi_, theta_, omega_, E_, S_ = SED.consolidatePartsAndResamplePi(o, z, pi,
+      alpha, theta, omega, E, S)
+    ll = SED.logJoint(o, y, z, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL)
+
+    extra = dict(s=s, v=v, cost=cost)
+    filename = f'{basePath}/optimize-{s:05}'
+    SED.saveSample(filename, o, alpha, z, pi_, theta_, E_, S_, x, Q, omega_, mL,
+      ll, subsetIdx, datasetPath, extra=extra)
+
+  s, v, cost, x, omega, theta = icp.optimize_all(o, y, E, S, Q,
+    callback=callback, callbackInterval=1)
+
+  ip.embed()
+
+def test_optimize_all():
+  sample = 'omega/se2_waving_hand/001/init.gz'
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+    SED.loadSample(sample) 
+
+  data = du.load(f'{datasetPath}/data')
+  yAll = data['y']
+  T = len(z)
+  K = theta.shape[1]
+  if subsetIdx is not None:
+    y = [yt[subsetIdx[t]] for t, yt in enumerate(yAll)]
+
+  basePath = 'optimize/se2_waving_hand/001'
+  def callback(s, v, cost, x, omega, theta):
+    z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t])
+      for t in range(T) ]
+    z, pi_, theta_, omega_, E_, S_ = SED.consolidatePartsAndResamplePi(o, z, pi,
+      alpha, theta, omega, E, S)
+    ll = SED.logJoint(o, y, z, x, theta_, E_, S_, Q, alpha, pi_, omega_, mL)
+
+    extra = dict(s=s, v=v, cost=cost)
+    filename = f'{basePath}/optimize-{s:05}'
+    SED.saveSample(filename, o, alpha, z, pi_, theta_, E_, S_, x, Q, omega_, mL,
+      ll, subsetIdx, datasetPath, extra=extra)
+
+  s, v, cost, x, omega, theta = icp.optimize_all(o, y, E, S, Q,
+    callback=callback, callbackInterval=1)
+
+  ip.embed()
+
+  # x_t, theta_t = icp.optimize_t(o, y[t], x[t-1], omega, theta[t-1], E, S, Q)
+  
+def test_optimize_omega():
+  sample = 'omega/se2_waving_hand/001/init.gz'
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, datasetPath = \
+    SED.loadSample(sample) 
+
+  data = du.load(f'{datasetPath}/data')
+  yAll = data['y']
+  T = len(z)
+  K = theta.shape[1]
+  if subsetIdx is not None:
+    y = [yt[subsetIdx[t]] for t, yt in enumerate(yAll)]
+
+  # omegaNew = np.zeros_like(omega)
+  # # for k in range(K):
+  # for k in range(0,1):
+  #   yk = [ y[t][z[t]==k] for t in range(T) ]
+  #   theta_k = theta[:,k]
+  #   omegaNew[k] = icp.optimize_omega(o, yk, x, theta_k, E[k])
+
+  t = 2
+  x_t, theta_t = icp.optimize_t(o, y[t], x[t-1], omega, theta[t-1], E, S, Q)
+
+  omegaTheta_t = theta_t.copy()
+  for k in range(K): omegaTheta_t[k] = omega[k] @ omegaTheta_t[k]
+  draw.draw_t(o, y=y[t], x=x_t, theta=omegaTheta_t, E=E)
+
+  ip.embed()
+
+
+
+
+def test_tf_Rt():
+  o = SED.opts(lie='se2')
+  m = getattr(lie, o.lie)
+  x = m.rvs()
+  R_lie, d_lie = m.Rt(x)
+  R_tf, d_tf = SED_tf.Rt(np2tf(x))
+  assert np.allclose(R_tf.numpy(), R_lie)
+  assert np.allclose(d_tf.numpy().squeeze(), d_lie)
+
+  o = SED.opts(lie='se3')
+  m = getattr(lie, o.lie)
+  x = m.rvs()
+  R_lie, d_lie = m.Rt(x)
+  R_tf, d_tf = SED_tf.Rt(np2tf(x))
+  assert np.allclose(R_tf.numpy(), R_lie)
+  assert np.allclose(d_tf.numpy().squeeze(), d_lie)
+
+  xi_tf = SED_tf.inv(o,np2tf(x)).numpy()
+  xi_lie = m.inv(x)
+  assert np.allclose(xi_tf, xi_lie)
+
+  y = mvn.rvs(np.zeros(o.dy), size=100)
+  xy_tf = SED_tf.TransformPointsNonHomog(np2tf(x), np2tf(y)).numpy()
+  xy_lie = SED.TransformPointsNonHomog(x, y)
+  assert np.abs(np.sum(xy_tf - xy_lie)) < 1e-4
+
+
+
 
 def testTranslationWithObs():
   o = SED.opts(lie='se2')

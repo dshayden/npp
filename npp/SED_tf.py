@@ -2,6 +2,7 @@ import numpy as np, tensorflow as tf, lie
 from . import SED
 tf.compat.v1.enable_eager_execution()
 import IPython as ip, sys
+from tensorflow.linalg import matmul, matvec
 
 
 #### Old functions for attempting full trajectory optimization ####
@@ -173,6 +174,11 @@ def Si_tf(o, S):
   Si = np.linalg.inv(S)
   return [ np2tf(_) for _ in Si ]
 
+def Qi_tf(o, Q):
+  m = getattr(lie, o.lie)
+  Qi = np.linalg.inv(Q)
+  return np2tf(Qi)
+
 def obs_t_tf(yt):
   return np2tf(np.concatenate((yt, np.ones((yt.shape[0],1))), axis=1))
 
@@ -206,3 +212,40 @@ def zeroH_tf(o):
   if o.dy == 2: return tf.constant([0.0, 0.0, 1.0])
   elif o.dy == 3: return tf.constant([0.0, 0.0, 0.0, 1.0])
   else: assert False, 'Not supported'
+
+# H1_se2 = np2tf( np.array([[ 1, 0], [0, 1], [0, 0]], dtype=np.float) )
+# H1_se3 = np2tf( np.array([[ 1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0] ],
+#   dtype=np.float) )
+# H2_se2 = np2tf( np.array([[0, 0, 1]], dtype=np.float) )
+# H2_se3 = np2tf( np.array([[0, 0, 0, 1]], dtype=np.float) )
+# def Rt(o, x):
+#   # return rotation and translation component of x
+#   if o.lie == 'se2':
+#     R = matmul(tf.transpose(H1_se2), matmul(x, H1_se2))
+#     d = tf.squeeze(matmul(H2_se2, matmul(tf.transpose(x), H1_se2)))
+#   else:
+#     R = matmul(tf.transpose(H1_se3), matmul(x, H1_se3))
+#     d = tf.squeeze(matmul(H2_se3, matmul(tf.transpose(x), H1_se3)))
+#   return R, d
+
+def Rt(x): return x[:-1,:-1], x[:-1,-1]
+
+bottomRow_se2 = np2tf(np.array([[0, 0, 1]]))
+bottomRow_se3 = np2tf(np.array([[0, 0, 0, 1]]))
+def MakeRd(o, R, d):
+  top = tf.concat([R, tf.expand_dims(d,1)], axis=1)
+  bottom = bottomRow_se2 if o.lie == 'se2' else bottomRow_se3
+  return tf.concat([top,bottom], axis=0)
+
+def inv(o, x):
+  R, d = Rt(x)
+  Rnew = tf.transpose(R)
+  dnew = matvec(-Rnew, d)
+  return MakeRd(o, Rnew, dnew)
+
+def TransformPointsNonHomog(x, y):
+  R, d = Rt(x)
+
+  ptsRot = tf.transpose(matmul(R, y, transpose_b=True))
+  ptsRotTrans = ptsRot + d
+  return ptsRotTrans

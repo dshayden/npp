@@ -29,6 +29,7 @@ def main(args):
   if not args.no_title:
     title = getSampleDatasetName(samples[0])
     plt.title(title)
+  plt.xlabel('Samples'); plt.ylabel('Log Joint')
   
   if args.save: plt.savefig(args.save, dpi=300, bbox_inches='tight')
   else: plt.show()

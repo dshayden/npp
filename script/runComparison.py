@@ -7,7 +7,7 @@ import os
 
 def main(args):
   # load previous sample
-  o, alpha, z, pi, theta, E, S, x, Q, mL, ll, subsetIdx, dataset = \
+  o, alpha, z, pi, theta, E, S, x, Q, omega, mL, ll, subsetIdx, dataset = \
     SED.loadSample(args.sample)
   K = len(pi)-1
   assert dataset
@@ -24,7 +24,7 @@ def main(args):
   # make mL so it is the right size
   mL_const = np.mean([np.mean(mL[t]) for t in range(T)])
   mL = [ mL_const*np.ones(y[t].shape[0]) for t in range(T) ]
-  z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], mL[t], max=True)
+  z = [ SED.inferZ(o, y[t], pi, theta[t], E, x[t], omega, mL[t], max=True)
     for t in range(T) ]
   
   # precompute image indices for se3
@@ -52,6 +52,10 @@ def main(args):
       ztk = z[t]==k
       sampleLabels[t, ys[ztk], xs[ztk]] = k+1
 
+  # du.ViewImgs(sampleLabels)
+  # ip.embed()
+  # sys.exit()
+
   # Have groundtruth and label images, call comparison
   iou = args.iou
   tp, fp, fn, ids, tilde_tp, motsa, motsp, s_motsa = \
@@ -68,7 +72,7 @@ def main(args):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description='')
   parser.add_argument('sample', type=str, help='path to sample')
-  parser.add_argument('--sample', type=float, default=0.5,
+  parser.add_argument('--iou', type=float, default=0.5,
     help='IoU comparison')
 
   parser.set_defaults(func=main)

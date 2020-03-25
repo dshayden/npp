@@ -35,9 +35,11 @@ def main(args):
 
   sampleRng = range(args.firstSampleIndex, args.firstSampleIndex+args.nSamples)
   for cnt, nS in enumerate(sampleRng):
+    du.tic()
     z, pi, theta, E, S, x, Q, omega, mL, move, accept = SED.sampleRJMCMC(o, y,
       alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch)
     ll[cnt] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
+    print(du.toc())
 
     if move == 'birth':
       nBirthProp += 1
@@ -51,8 +53,7 @@ def main(args):
 
     a = '+' if accept == True else '-'
     if not args.silent:
-      print(
-        f'Iter {nS:05}, LL: {ll[cnt]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
+      print(f'{args.outdir}, Iter {nS:05}, LL: {ll[cnt]:.2f}, K: {len(pi)-1}, Move: {move[0]}{a}')
 
     if cnt % args.saveEvery == 0:
       filename = f'{args.outdir}/sample-{nS:08}'
