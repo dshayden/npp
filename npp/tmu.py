@@ -1,10 +1,10 @@
 # trimesh utilities and helpers
 import npp
 import numpy as np
-import trimesh as tm
+import trimesh as tm, trimesh.viewer
 import du
 import datetime
-import pyglet
+import pyglet, pyglet.gl
 import os, pathlib
 import IPython as ip
 
@@ -62,7 +62,7 @@ def transform_points(Tx, pts):
   return Tx[:3,:3].dot(pts.T).T + Tx[:3,3]
 
 
-def show_scene_with_bindings(scene, res=[640,480]):
+def show_scene_with_bindings(scene, res=[640,480], point_eps=0.25):
   """ Show a scene but with additional, custom behavior/bindings.
 
   WARNING: This relies on manually modified trimesh Scene code, so that
@@ -75,18 +75,35 @@ def show_scene_with_bindings(scene, res=[640,480]):
     scene (from trimesh)
     res (list): width x height
   """
-  sv = scene.show(resolution=res, start_loop=False)
+  sv = tm.viewer.SceneViewer(scene, resolution=res, start_loop=False, background=[1.0, 1.0, 1.0, 0.0])
+  # sv = tm.viewer.SceneViewer(scene, resolution=res, start_loop=False, background=[1.0, 1.0, 1.0, 0.0],
+  #   gl.glDisable(gl.GL_CULL_FACE))
+  global pointSize
+  pointSize = 4.0
+
+  # pyglet.gl.glPointSize(40)
+
+  # sv = scene.show(resolution=res, start_loop=False)
 
   @sv.event
   def on_key_press(symbol, modifiers):
     now = datetime.datetime.now()
     fname = 'screenshot-{date:%Y-%m-%d-%H-%M-%S}.png'.format(date=now)
+    global pointSize
     if symbol == ord('s') or symbol == ord('S'):
       pyglet.image.get_buffer_manager().get_color_buffer().save(fname)
       print('Saved: %s' % fname)
-    elif symbol == ord('c') or symbol == ord('C'):
-      print('Camera')
-      print(scene.graph['camera'])
+    # elif symbol == ord('c') or symbol == ord('C'):
+    #   print('Camera')
+    #   print(scene.graph['camera'])
+    elif symbol == ord('+'):
+      pointSize += point_eps
+      print(f'pointSize: {pointSize}')
+      pyglet.gl.glPointSize(pointSize)
+    elif symbol == ord('-'):
+      pointSize = max(point_eps, pointSize - point_eps)
+      print(f'pointSize: {pointSize}')
+      pyglet.gl.glPointSize(pointSize)
 
   pyglet.app.run()
 

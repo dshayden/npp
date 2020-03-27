@@ -36,6 +36,8 @@ def draw_t_SE3(o, **kwargs):
   zCols = kwargs.get('zCols', None)
   if zCols is None:
     zCols = du.diffcolors(100, bgCols=[[1,1,1],[0,0,0]])
+    # zCols[1] = zCols[7]
+    # zCols[4] = zCols[11]
     # zColsInt = (zCols*255).astype(np.int)
 
   scene = tm.scene.Scene()
@@ -72,8 +74,11 @@ def draw_t_SE3(o, **kwargs):
   x = kwargs.get('x', None)
   noX = kwargs.get('noX', None)
   if x is not None and not noX:
-    scene.add_geometry(tmu.MakeAxes(0.2, du.asShape(x, o.dxGm),
+    scene.add_geometry(tmu.MakeAxes(0.1, du.asShape(x, o.dxGm),
       np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
+    # scene.add_geometry(tmu.MakeAxes(0.2, du.asShape(x, o.dxGm),
+    #   np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
+
     # scene.add_geometry(tmu.MakeAxes(2.0, du.asShape(x, o.dxGm),
     #   np.tile([0, 0, 0, 255], [4,1]).astype(np.int), minor=0.01))
     # scene.add_geometry(tmu.MakeAxes(60.0, du.asShape(x, o.dxGm),
@@ -90,7 +95,8 @@ def draw_t_SE3(o, **kwargs):
       T_world_part = du.asShape(x, o.dxGm).dot(
         du.asShape(theta[k], o.dxGm))
       
-      scene.add_geometry(tmu.MakeAxes(0.2, T_world_part, c, minor=0.01))
+      scene.add_geometry(tmu.MakeAxes(0.1, T_world_part, c, minor=0.01))
+      # scene.add_geometry(tmu.MakeAxes(0.2, T_world_part, c, minor=0.01))
 
       # scene.add_geometry(tmu.MakeAxes(20.0, T_world_part, c, minor=0.01))
       # scene.add_geometry(tmu.MakeAxes(60.0, T_world_part, c, minor=0.01))
