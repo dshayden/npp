@@ -72,13 +72,13 @@ def main(args):
     for t in range(T):
       decimateIdx = np.random.choice(range(len(y[t])), nPts)
       y[t] = y[t][decimateIdx]
-      z[t] = z[t][decimateIdx]
+      if z is not None: z[t] = z[t][decimateIdx]
 
   if args.wiggle:
     from scipy.stats import multivariate_normal as mvn
     for t in range(T):
       y[t] += mvn.rvs(np.zeros(3), args.wiggle_eps*np.eye(3), size=y[t].shape[0])
-    theta[0,0][1,3] += 0.2
+    # if theta is not None: theta[0,0][1,3] += 0.2
 
   if args.save:
     try: os.makedirs(args.save)
