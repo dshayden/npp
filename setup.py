@@ -13,7 +13,7 @@ except Exception:
   install_reqs = []
 
 def readme():
-  with open('README.rst') as f:
+  with open('README.md') as f:
     return f.read()
 
 setup(name='npp',
