@@ -22,8 +22,10 @@ Example Nonparametric Parts inference can be run by doing the following:
     sh example.sh
 
 This will run initialization and inference on the se2_randomwalk3 dataset.
-Results for the final sample will be placed in the directory
-example_inference/visualization
+Results for the final sample, visualized as PNG files, will be placed in the
+directory example_inference/visualization. Samples are placed in the directory
+example_inference/samples, and can be loaded for analyis using
+npp.SED.loadSample. See script/drawSample.py for code on how to do this.
 
 Coming Soon
 --------
