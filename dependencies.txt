@@ -1,2 +1,0 @@
-pip install trimesh==2.38.42
-pip install 'networkx>=2.2,<2.3'
