@@ -208,7 +208,7 @@ def optimize_all(o, y, E, S, Q, **kwargs):
 
     opt.apply_gradients([(grads, v)])
     elapsedMin = du.toc() / 60.
-    print(f'{s:05}, cost: {cost.numpy():.2f}, elapsed (min): {elapsedMin:.2f}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, elapsed (min): {elapsedMin:.2f}')
     if np.abs(cost.numpy() - prevCost) < 1e-6: break
     else: prevCost = cost.numpy()
   
@@ -333,7 +333,7 @@ def multi_optimize_t(o, yt, omega, E, S, Q, xPrev, thetaPrev, xPrev2, thetaPrev2
   for s in range(steps):
     cost, grads = grad(qs_t)
     opt.apply_gradients([(grads, qs_t)])
-    print(f'{s:05}, cost: {cost.numpy():.2f}, qs_t: {qs_t.numpy()}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, qs_t: {qs_t.numpy()}')
     if np.abs(cost.numpy() - prevCost) < 1e-6: break
     else: prevCost = cost.numpy()
 
@@ -521,7 +521,7 @@ def optimize_omega(o, yk, x, theta_k, E_k, **kwargs):
   for s in range(steps):
     cost, grads = grad(w)
     opt.apply_gradients([(grads, w)])
-    print(f'{s:05}, cost: {cost.numpy():.2f}, w: {w.numpy()}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, w: {w.numpy()}')
     if np.abs(cost.numpy() - prevCost) < 1e-6: break
     else: prevCost = cost.numpy()
 
@@ -642,7 +642,7 @@ def optimize_global2(o, y_t, xPrev, Q, theta_t, E, **kwargs):
   for s in range(steps):
     cost, grads = grad(q_t)
     opt.apply_gradients([(grads, q_t)])
-    print(f'{s:05}, cost: {cost.numpy():.2f}, q: {q_t.numpy()}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, q: {q_t.numpy()}')
     if np.abs(cost.numpy() - prevCost) < 1e-4: break
     else: prevCost = cost.numpy()
 
@@ -692,7 +692,7 @@ def optimize_global(o, y_t, xPrev, theta_t, E, **kwargs):
   for s in range(steps):
     cost, grads = grad(q_t)
     opt.apply_gradients([(grads, q_t)])
-    print(f'{s:05}, cost: {cost.numpy():.2f}, q: {q_t.numpy()}')
+    # print(f'{s:05}, cost: {cost.numpy():.2f}, q: {q_t.numpy()}')
     if np.abs(cost.numpy() - prevCost) < 1e-4: break
     else: prevCost = cost.numpy()
 

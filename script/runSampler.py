@@ -39,7 +39,7 @@ def main(args):
     z, pi, theta, E, S, x, Q, omega, mL, move, accept = SED.sampleRJMCMC(o, y,
       alpha, z, pi, theta, E, S, x, Q, omega, mL, pBirth, pDeath, pSwitch)
     ll[cnt] = SED.logJoint(o, y, z, x, theta, E, S, Q, alpha, pi, omega, mL)
-    print(du.toc())
+    # print(du.toc())
 
     if move == 'birth':
       nBirthProp += 1
@@ -72,9 +72,9 @@ if __name__ == "__main__":
   parser.add_argument('--firstSampleIndex', type=int, default=1,
     help='first sample index, this number given to first saved sample')
 
-  parser.add_argument('--pBirth', type=float, default=0.0,
+  parser.add_argument('--pBirth', type=float, default=0.2,
     help='Birth move probability')
-  parser.add_argument('--pDeath', type=float, default=0.0,
+  parser.add_argument('--pDeath', type=float, default=0.2,
     help='Death move probability')
   parser.add_argument('--pSwitch', type=float, default=0.0,
     help='Switch move probability')
