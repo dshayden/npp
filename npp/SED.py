@@ -11,8 +11,6 @@ from scipy.special import logsumexp, gammaln
 import du, du.stats # move useful functions from these to utils (catrnd)
 import functools, itertools
 
-import IPython as ip
-
 def opts(**kwargs):
   r''' Construct algorithm options
 

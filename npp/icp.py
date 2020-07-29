@@ -10,7 +10,7 @@ from scipy.stats import chi2
 import scipy.optimize
 import matplotlib.pyplot as plt
 import functools, numdifftools
-import IPython as ip, sys
+# import IPython as ip, sys
 import tensorflow as tf
 from tensorflow.linalg import matmul, matvec
 

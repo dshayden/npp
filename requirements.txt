@@ -1,0 +1,11 @@
+numpy
+scipy
+sklearn
+matplotlib
+sciit-learn
+trimesh==2.38.42
+networkx>=2.2,<2.3
+-e git+git@github.com:dshayden/du.git#egg=du
+numdifftools
+tensorflow>=1.13
+pyglet

@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.stats import expon
-import IPython as ip
+# import IPython as ip
 
 def slice_univariate(f, x0, **kwargs):
   """ Univariate slice sampler.

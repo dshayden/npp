@@ -4,7 +4,6 @@ import argparse, du, numpy as np, matplotlib.pyplot as plt
 from os.path import isdir
 import os
 import lie
-import IPython as ip
 
 def main(args):
   # load sample

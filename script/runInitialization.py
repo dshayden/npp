@@ -5,7 +5,6 @@ import lie
 from npp import SED, drawSED, icp
 import os
 np.set_printoptions(suppress=True, precision=4)
-import IPython as ip, sys
 
 def main(args):
   data = du.load(f'{args.dataset_path}/data')

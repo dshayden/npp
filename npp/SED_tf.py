@@ -1,7 +1,7 @@
 import numpy as np, tensorflow as tf, lie
 from . import SED
 tf.compat.v1.enable_eager_execution()
-import IPython as ip, sys
+# import IPython as ip, sys
 from tensorflow.linalg import matmul, matvec
 
 

@@ -11,7 +11,7 @@ import numdifftools as nd
 import lie
 import du, du.stats
 import matplotlib.pyplot as plt
-import IPython as ip, sys
+# import IPython as ip, sys
 import scipy.linalg as sla
 import functools
 np.set_printoptions(suppress=True, precision=4)
@@ -220,7 +220,7 @@ def test_optimize_all_synthetic():
   s, v, cost, x, omega, theta = icp.optimize_all(o, y, E, S, Q,
     callback=callback, callbackInterval=1)
 
-  ip.embed()
+  # ip.embed()
 
 def test_optimize_all():
   sample = 'omega/se2_waving_hand/001/init.gz'
@@ -250,7 +250,7 @@ def test_optimize_all():
   s, v, cost, x, omega, theta = icp.optimize_all(o, y, E, S, Q,
     callback=callback, callbackInterval=1)
 
-  ip.embed()
+  # ip.embed()
 
   # x_t, theta_t = icp.optimize_t(o, y[t], x[t-1], omega, theta[t-1], E, S, Q)
   
@@ -280,7 +280,7 @@ def test_optimize_omega():
   for k in range(K): omegaTheta_t[k] = omega[k] @ omegaTheta_t[k]
   draw.draw_t(o, y=y[t], x=x_t, theta=omegaTheta_t, E=E)
 
-  ip.embed()
+  # ip.embed()
 
 
 

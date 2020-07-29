@@ -2,7 +2,6 @@ import itertools
 import numpy as np
 from scipy.special import logsumexp
 import du.stats
-import IPython as ip
 
 def build(t0, x0, ts, ks, val, costxx, costxy):
   """ Construct swap hmm for K targets.

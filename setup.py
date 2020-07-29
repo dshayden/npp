@@ -1,5 +1,16 @@
-from setuptools import setup
+import pip
+import logging
+import pkg_resources
+try:
+  from setuptools import setup
+except ImportError:
+  from distutils.core import setup
 
+try:
+  install_reqs = _parse_requirements("requirements.txt")
+except Exception:
+  logging.warning('Fail load requirements file, so using default ones.')
+  install_reqs = []
 
 def readme():
   with open('README.rst') as f:
@@ -20,9 +31,10 @@ setup(name='npp',
   author_email='dshayden@mit.edu',
   license='MIT',
   packages=['npp'],
-  install_requires=[
-    'numpy', 'scipy', 'lie', 'matplotlib', 'scikit-learn', 'trimesh', 'Shapely'
-  ],
+  install_requires=install_reqs,
+  # install_requires=[
+  #   'numpy', 'scipy', 'lie', 'matplotlib', 'scikit-learn', 'trimesh', 'Shapely'
+  # ],
   test_suite='nose.collector',
   tests_require=['nose', 'nose-cover3', 'numdifftools'],
   include_package_data=True,

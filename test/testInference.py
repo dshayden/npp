@@ -8,7 +8,6 @@ import numdifftools as nd
 import lie
 import du, du.stats
 import matplotlib.pyplot as plt
-import IPython as ip, sys
 import scipy.linalg as sla
 np.set_printoptions(suppress=True, precision=4)
 
@@ -1020,7 +1019,7 @@ class test_se2_randomwalk3(unittest.TestCase):
 
     # skel, dist = medial_axis(im)
 
-    ip.embed()
+    # ip.embed()
 
   def test_interp(s):
     o = SED.opts(lie='se2')
@@ -1396,7 +1395,7 @@ class test_se2_randomwalk3(unittest.TestCase):
     # mu, Sigma = SED.sampleThetaTranslation(o, R_cur, theta[t-1,k], S[k], omega[k], lam,
     #   thetaNext=theta[t+1,k])
 
-    ip.embed()
+    # ip.embed()
 
 
   def testFeedbackMCMC(s):
@@ -1726,7 +1725,7 @@ class test_se2_randomwalk3(unittest.TestCase):
     draw.draw(o, y=y, x=x, theta=drawTheta, z=z, E=E)
     plt.show()
 
-    ip.embed()
+    # ip.embed()
 
     # t = 5
     # draw.draw_t(o, y=y[t], x=x[t], theta=omega, z=z[t], E=E, reverseY=True)

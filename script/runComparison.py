@@ -2,7 +2,6 @@ import numpy as np, matplotlib.pyplot as plt
 import argparse
 import du, du.stats
 from npp import SED, drawSED, evalSED
-import IPython as ip
 import os
 
 def main(args):

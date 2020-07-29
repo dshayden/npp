@@ -4,9 +4,9 @@ import numpy as np
 import trimesh as tm, trimesh.viewer
 import du
 import datetime
-import pyglet, pyglet.gl
+import pyglet, pyglet.gl # dependencies of trimesh
 import os, pathlib
-import IPython as ip
+# import IPython as ip
 
 currentPath = pathlib.Path(os.path.abspath(__file__))
 spherePath = currentPath.parents[1] / 'data/sphere/sphere_ico5.obj'
