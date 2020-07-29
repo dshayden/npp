@@ -9,10 +9,8 @@ on Computer Vision and Pattern Recognition. 2020.
 
 Getting Started
 --------
-`
-git pull git@github.com:dshayden/npp.git
-cd npp
-pip install -r requirements.txt
-pip install -e .
-sh example.sh
-`
+    git pull git@github.com:dshayden/npp.git
+    cd npp
+    pip install -r requirements.txt
+    pip install -e .
+    sh example.sh
